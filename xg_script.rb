@@ -1,6 +1,13 @@
 require 'nokogiri'
 require 'httparty'
 require 'watir'
+require 'selenium-webdriver'
+require 'webdrivers'
+require 'pry'
+require 'pry-nav'
+require 'capybara'
+require 'active_support/time'
+require 'distribution'
 
 # THRESHOLDS
 
@@ -46,7 +53,7 @@ def games(url)
 end
 
 def games_tmp(url)
-  response = HTTParty.get(url).body;0
+  response = HTTParty.get(url);0
   JSON.parse(response)['tournaments'].
     select { |x| AVAILABLE_LEAGUES.include?(x['tournamentName']) }.
     map { |x| x['matches'].map{ |g| { home: g['homeTeamName'], away: g['awayTeamName'] } } }.flatten
@@ -72,17 +79,9 @@ def goal_and_assist(goal, assist)
 end
 
 def xgs(home_team, away_team, starting_eleven)
-  br = Watir::Browser.new
-  br.goto("https://understat.com/team/#{home_team}/2024")
-  br.elements(class: 'fa fa-square yellow-card').wait_until(&:present?)
-  #js_doc = br.element(id: 'team-players')
-  #hsh = Nokogiri::HTML(js_doc.inner_html){ |conf| conf.noblanks };0
-  #ht_data_json = br.elements( :tag_name => "script" ).select{|x| x.inner_html.include?("statisticsData")}.last.inner_html.split("JSON.parse(\'")[1].split("\'").first
-  #ht_data = JSON.parse("\"#{ht_data_json}\"".undump)
-
-  home_data_json = br.elements( :tag_name => "script" ).select{|x| x.inner_html.include?("playersData")}.last.inner_html.split("JSON.parse(\'")[1].split("\'").first
+  resp = HTTParty.get("https://understat.com/team/#{home_team}/2024", timeout: 60)
+  home_data_json = Nokogiri::HTML(resp).xpath("//script")[3].children.first.text.split("JSON.parse(\'")[1].split("\'").first
   home_data = JSON.parse("\"#{home_data_json}\"".undump)
-  br.close
   home_players = home_data.each_with_object({}) do |x, arr|
     arr[x['id']] = { name: x['player_name'], xg: (x['xG'].to_f / (x['time'].to_f / 90)), xa: (x['xA'].to_f / (x['time'].to_f / 90)), yc: (x['yellow_cards'].to_i / (x['time'].to_f / 90))}
   end
@@ -99,19 +98,9 @@ def xgs(home_team, away_team, starting_eleven)
     proposal
   end.flatten
 
-  #write_to_file home_players.sort_by{|_, v| v[:name].split(' ').last}.map{|k,v| { k => v.slice(:name)}}
-  #puts "Please input comma separated home team player ids"
-  #hp = $stdin.gets.chomp
-
-  br = Watir::Browser.new
-  br.goto("https://understat.com/team/#{away_team}/2024")
-  #js_doc = br.elements(class: 'align-right nowrap').wait_until(&:present?)
-  #js_doc = br.element(id: 'team-players')
-  #hsh = Nokogiri::HTML(js_doc.inner_html){ |conf| conf.noblanks };0
-  sleep(2)
-  away_data_json = br.elements( :tag_name => "script" ).select{|x| x.inner_html.include?("playersData")}.last.inner_html.split("JSON.parse(\'")[1].split("\'").first
+  resp = HTTParty.get("https://understat.com/team/#{away_team}/2024", timeout: 60)
+  away_data_json = Nokogiri::HTML(resp).xpath("//script")[3].children.first.text.split("JSON.parse(\'")[1].split("\'").first
   away_data = JSON.parse("\"#{away_data_json}\"".undump)
-  br.close
   away_players = away_data.each_with_object({}) do |x, arr|
     arr[x['id']] = { name: x['player_name'], xg: (x['xG'].to_f / (x['time'].to_f / 90)), xa: (x['xA'].to_f / (x['time'].to_f / 90)), yc: (x['yellow_cards'].to_i / (x['time'].to_f / 90))}
   end
@@ -127,10 +116,6 @@ def xgs(home_team, away_team, starting_eleven)
     end
     proposal
   end.flatten
-
-  #write_to_file away_players.sort_by{|_, v| v[:name].split(' ').last}.map{|k,v| { k => v.slice(:name)}}
-  #puts "Please input comma separated away team player ids"
-  #ap = $stdin.gets.chomp
 
   stats = {
     home_xgs: {},
