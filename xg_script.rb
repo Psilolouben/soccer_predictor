@@ -88,7 +88,7 @@ def xgs(home_team, away_team, home_id, away_id, starting_eleven)
   home_team_data_json = Nokogiri::HTML(resp.body).xpath("//script")[2].children.first.text.split("JSON.parse(\'")[1].split("\'").first
   home_team_data = JSON.parse("\"#{home_team_data_json}\"".undump)
   home_team_xga = home_team_data['situation'].sum{|_, v| v['against']['xG']} / home_data.map{|x| x['games']}.max.to_f
-=
+
   home_players = home_data.each_with_object({}) do |x, arr|
     arr[x['id']] = { name: x['player_name'], xg: (x['xG'].to_f / (x['time'].to_f / 90)), xa: (x['xA'].to_f / (x['time'].to_f / 90)), yc: (x['yellow_cards'].to_i / (x['time'].to_f / 90))}
   end
