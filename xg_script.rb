@@ -106,7 +106,6 @@ def xgs(home_team, away_team, starting_eleven)
   hp = starting_eleven[:home].map do |h|
     proposal = home_players.select{ |_, hm| I18n.transliterate(hm[:name]).include?(I18n.transliterate(h)) }.keys
     if proposal.empty? || proposal.count > 1
-      binding.pry
       puts "No xg found for #{h}"
       puts home_players.sort_by{|_, v| v[:name].split(' ').last}.map{|k,v| { k => v.slice(:name)}}
       puts "Please input id for #{h}"
@@ -124,7 +123,6 @@ def xgs(home_team, away_team, starting_eleven)
   away_team_data_json = Nokogiri::HTML(resp.body).xpath("//script")[2].children.first.text.split("JSON.parse(\'")[1].split("\'").first
   away_team_data = JSON.parse("\"#{away_team_data_json}\"".undump)
   away_team_xga = away_team_data['situation'].sum{|_, v| v['against']['xG']}
-  binding.pry
   away_players = away_data.each_with_object({}) do |x, arr|
     arr[x['id']] = { name: x['player_name'], xg: (x['xG'].to_f / (x['time'].to_f / 90)), xa: (x['xA'].to_f / (x['time'].to_f / 90)), yc: (x['yellow_cards'].to_i / (x['time'].to_f / 90))}
   end
