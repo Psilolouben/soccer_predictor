@@ -6,6 +6,7 @@ require 'webdrivers'
 require 'pry'
 require 'pry-nav'
 require 'capybara'
+require 'active_support'
 require 'active_support/time'
 require 'distribution'
 
@@ -36,11 +37,13 @@ NAMES_MAP = {
 
 NUMBER_OF_SIMULATIONS = 10000
 
-AVAILABLE_LEAGUES = ['England-Premier-League', 'France-Ligue-1', 'Germany-Bundesliga', 'Italy-Serie-A', 'Spain-LaLiga']
+AVAILABLE_LEAGUES = ['France-Ligue-1', 'England-Premier-League', 'Spain-LaLiga', 'Germany-Bundesliga', 'Italy-Serie-A', 'Europe-Champions-League']
+#AVAILABLE_LEAGUES = ['England-Premier-League', 'Spain-LaLiga', 'Germany-Bundesliga']
 
 def games(url)
   br = Watir::Browser.new
   br.goto(url)
+
   a = br.elements(class: 'Match-module_match__XlKTY').map do |x|
     {
       home: x.elements(class: 'Match-module_teamName__GoJbS').first.elements.first.inner_html,
@@ -54,7 +57,7 @@ end
 
 def games_tmp(url)
   response = HTTParty.get(url);0
-  JSON.parse(response)['tournaments'].
+  JSON.parse(response.body)['tournaments'].
     select { |x| AVAILABLE_LEAGUES.include?(x['tournamentName']) }.
     map { |x| x['matches'].map{ |g| { home: g['homeTeamName'], away: g['awayTeamName'] } } }.flatten
 end
@@ -80,16 +83,30 @@ end
 
 def xgs(home_team, away_team, starting_eleven)
   resp = HTTParty.get("https://understat.com/team/#{home_team}/2024", timeout: 60)
-  home_data_json = Nokogiri::HTML(resp).xpath("//script")[3].children.first.text.split("JSON.parse(\'")[1].split("\'").first
+  return if Nokogiri::HTML(resp.body).xpath("//title").text.include?('404')
+
+  home_data_json = Nokogiri::HTML(resp.body).xpath("//script")[3].children.first.text.split("JSON.parse(\'")[1].split("\'").first
   home_data = JSON.parse("\"#{home_data_json}\"".undump)
+
+  home_team_data_json = Nokogiri::HTML(resp.body).xpath("//script")[2].children.first.text.split("JSON.parse(\'")[1].split("\'").first
+  home_team_data = JSON.parse("\"#{home_team_data_json}\"".undump)
+  home_team_xga = home_team_data['situation'].sum{|_, v| v['against']['xG']}
+
   home_players = home_data.each_with_object({}) do |x, arr|
     arr[x['id']] = { name: x['player_name'], xg: (x['xG'].to_f / (x['time'].to_f / 90)), xa: (x['xA'].to_f / (x['time'].to_f / 90)), yc: (x['yellow_cards'].to_i / (x['time'].to_f / 90))}
   end
 
+  return if home_players.empty?
+  #home_team_data_json = Nokogiri::HTML(resp).xpath("//script")[2].children.first.text.split("JSON.parse(\'")[1].split("\'").first
+  #home_team_data = JSON.parse("\"#{home_team_data_json}\"".undump)
+  #home_team_GA = home_team_data['situation'].sum{|_, v| v['against']['xG']}
+  #home_team_games = home_team_data['situation'].sum{|_, v| v['against']['xG']}
+  #binding.pry
+
   hp = starting_eleven[:home].map do |h|
     proposal = home_players.select{ |_, hm| I18n.transliterate(hm[:name]).include?(I18n.transliterate(h)) }.keys
-
     if proposal.empty? || proposal.count > 1
+      binding.pry
       puts "No xg found for #{h}"
       puts home_players.sort_by{|_, v| v[:name].split(' ').last}.map{|k,v| { k => v.slice(:name)}}
       puts "Please input id for #{h}"
@@ -99,8 +116,15 @@ def xgs(home_team, away_team, starting_eleven)
   end.flatten
 
   resp = HTTParty.get("https://understat.com/team/#{away_team}/2024", timeout: 60)
-  away_data_json = Nokogiri::HTML(resp).xpath("//script")[3].children.first.text.split("JSON.parse(\'")[1].split("\'").first
+  return if Nokogiri::HTML(resp.body).xpath("//title").text.include?('404')
+
+  away_data_json = Nokogiri::HTML(resp.body).xpath("//script")[3].children.first.text.split("JSON.parse(\'")[1].split("\'").first
   away_data = JSON.parse("\"#{away_data_json}\"".undump)
+
+  away_team_data_json = Nokogiri::HTML(resp.body).xpath("//script")[2].children.first.text.split("JSON.parse(\'")[1].split("\'").first
+  away_team_data = JSON.parse("\"#{away_team_data_json}\"".undump)
+  away_team_xga = away_team_data['situation'].sum{|_, v| v['against']['xG']}
+  binding.pry
   away_players = away_data.each_with_object({}) do |x, arr|
     arr[x['id']] = { name: x['player_name'], xg: (x['xG'].to_f / (x['time'].to_f / 90)), xa: (x['xA'].to_f / (x['time'].to_f / 90)), yc: (x['yellow_cards'].to_i / (x['time'].to_f / 90))}
   end
@@ -123,7 +147,9 @@ def xgs(home_team, away_team, starting_eleven)
     home_xas: {},
     away_xas: {},
     home_cards: {},
-    away_cards: {}
+    away_cards: {},
+    home_xga: home_team_xga,
+    away_xga: away_team_xga
   }
 
   hp.map(&:strip).each{ |i| stats[:home_xgs][home_players[i][:name]] = home_players[i][:xg].to_f }
@@ -174,8 +200,11 @@ def simulate_match(home_team, away_team, stats)
     home_yellow_cards = stats[:home_cards].transform_values { |x| Distribution::Poisson.rng(x) }.select{|_, v| v > 0}
     away_yellow_cards = stats[:away_cards].transform_values { |x| Distribution::Poisson.rng(x) }.select{|_, v| v > 0}
 
-    home = home_xg_stats.sum{ |_, v| v }
-    away = away_xg_stats.sum{ |_, v| v }
+    home_xga = Distribution::Poisson.rng(stats[:home_xga]).to_i
+    away_xga = Distribution::Poisson.rng(stats[:away_xga]).to_i
+
+    home = [home_xg_stats.sum{ |_, v| v }, away_xga].min
+    away = [away_xg_stats.sum{ |_, v| v }, home_xga].min
 
     home_scorers << home_xg_stats.keys
     away_scorers << away_xg_stats.keys
@@ -295,10 +324,11 @@ if ARGV.count < 3
   matches.each do |m|
     next unless m[:url]
     puts "#{NAMES_MAP[m[:home]] || m[:home]} - #{NAMES_MAP[m[:away]] || m[:away]}"
-    stats = xgs(
+    match_xgs = xgs(
       (NAMES_MAP[m[:home]] || m[:home]).split(' ').join('_'), (NAMES_MAP[m[:away]] || m[:away]).split(' ').join('_'), ARGV[2] || starting_eleven( m[:url])
     )
-    simulate_match(NAMES_MAP[m[:home]] || m[:home], NAMES_MAP[m[:away]] || m[:away], stats)
+    next unless match_xgs
+    simulate_match(NAMES_MAP[m[:home]] || m[:home], NAMES_MAP[m[:away]] || m[:away], match_xgs)
   end
 else
   puts "#{ARGV[0]} - #{ARGV[1]}"
