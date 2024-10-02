@@ -40,20 +40,6 @@ NUMBER_OF_SIMULATIONS = 10000
 AVAILABLE_LEAGUES = ['France-Ligue-1', 'England-Premier-League', 'Spain-LaLiga', 'Germany-Bundesliga', 'Italy-Serie-A', 'Europe-Champions-League', 'Europa League']
 #AVAILABLE_LEAGUES = ['England-Premier-League', 'Spain-LaLiga', 'Germany-Bundesliga']
 
-def games_old(url)
-  br = Watir::Browser.new
-  br.goto(url)
-  a = br.elements(class: 'Match-module_match__XlKTY').map do |x|
-    {
-      home: x.elements(class: 'Match-module_teamName__GoJbS').first.elements.first.inner_html,
-      away: x.elements(class: 'Match-module_teamName__GoJbS').last.elements.first.inner_html,
-      url: x.links(href: /Preview/).count == 0 ? nil : x.links(href: /Preview/).first.href
-    }
-  end
-  br.close
-  a.select { |x| AVAILABLE_LEAGUES.any? { |y| x[:url]&.include?(y) } }
-end
-
 def games(url)
   br = Watir::Browser.new
   br.goto(url)
@@ -62,7 +48,9 @@ def games(url)
     map { |x| x['matches'].map do |g|
       {
         home: g['homeTeamName'],
+        home_id: g['homeTeamId'],
         away: g['awayTeamName'],
+        away_id: g['awayTeamId'],
         url: "https://www.whoscored.com/Matches/#{g['id']}/Preview/"
       }
     end
@@ -90,7 +78,7 @@ def goal_and_assist(goal, assist)
   (goal + assist - (goal * assist)) * 100
 end
 
-def xgs(home_team, away_team, starting_eleven)
+def xgs(home_team, away_team, home_id, away_id, starting_eleven)
   resp = HTTParty.get("https://understat.com/team/#{home_team}/2024", timeout: 60)
   return if Nokogiri::HTML(resp.body).xpath("//title").text.include?('404')
 
@@ -99,8 +87,8 @@ def xgs(home_team, away_team, starting_eleven)
 
   home_team_data_json = Nokogiri::HTML(resp.body).xpath("//script")[2].children.first.text.split("JSON.parse(\'")[1].split("\'").first
   home_team_data = JSON.parse("\"#{home_team_data_json}\"".undump)
-  home_team_xga = home_team_data['situation'].sum{|_, v| v['against']['xG']}
-
+  home_team_xga = home_team_data['situation'].sum{|_, v| v['against']['xG']} / home_data.map{|x| x['games']}.max.to_f
+=
   home_players = home_data.each_with_object({}) do |x, arr|
     arr[x['id']] = { name: x['player_name'], xg: (x['xG'].to_f / (x['time'].to_f / 90)), xa: (x['xA'].to_f / (x['time'].to_f / 90)), yc: (x['yellow_cards'].to_i / (x['time'].to_f / 90))}
   end
@@ -131,7 +119,8 @@ def xgs(home_team, away_team, starting_eleven)
 
   away_team_data_json = Nokogiri::HTML(resp.body).xpath("//script")[2].children.first.text.split("JSON.parse(\'")[1].split("\'").first
   away_team_data = JSON.parse("\"#{away_team_data_json}\"".undump)
-  away_team_xga = away_team_data['situation'].sum{|_, v| v['against']['xG']}
+  away_team_xga = away_team_data['situation'].sum{|_, v| v['against']['xG']} / away_data.map{|x| x['games']}.max.to_f
+
   away_players = away_data.each_with_object({}) do |x, arr|
     arr[x['id']] = { name: x['player_name'], xg: (x['xG'].to_f / (x['time'].to_f / 90)), xa: (x['xA'].to_f / (x['time'].to_f / 90)), yc: (x['yellow_cards'].to_i / (x['time'].to_f / 90))}
   end
@@ -165,6 +154,55 @@ def xgs(home_team, away_team, starting_eleven)
   ap.map(&:strip).each{ |i| stats[:away_xas][away_players[i][:name]] = away_players[i][:xa].to_f }
   hp.map(&:strip).each{ |i| stats[:home_cards][home_players[i][:name]] = home_players[i][:yc].to_f }
   ap.map(&:strip).each{ |i| stats[:away_cards][away_players[i][:name]] = away_players[i][:yc].to_f }
+
+  stats
+end
+
+def xgs_new(home_team, away_team, home_id, away_id, starting_eleven)
+  home_url = "https://www.whoscored.com/StatisticsFeed/1/GetPlayerStatistics?category=xg-stats&subcategory=summary&statsAccumulationType=0&isCurrent=true&playerId=&teamIds=#{home_id}&sortBy=xg&sortAscending=false&field=Overall&isMinApp=false&page=&includeZeroValues=true&numberOfPlayersToPick=&incPens=true"
+  away_url = "https://www.whoscored.com/StatisticsFeed/1/GetPlayerStatistics?category=xg-stats&subcategory=summary&statsAccumulationType=0&isCurrent=true&playerId=&teamIds=#{away_id}&sortBy=xg&sortAscending=false&field=Overall&isMinApp=false&page=&includeZeroValues=true&numberOfPlayersToPick=&incPens=true"
+  home_team_url = "https://www.whoscored.com/StatisticsFeed/1/GetTeamStatistics?category=summaryteam&subcategory=all&statsAccumulationType=0&field=Overall&tournamentOptions=&timeOfTheGameStart=&timeOfTheGameEnd=&teamIds=#{home_id}"
+  away_team_url = "https://www.whoscored.com/StatisticsFeed/1/GetTeamStatistics?category=xg-teamstats&subcategory=summary&statsAccumulationType=0&field=Overall&tournamentOptions=&timeOfTheGameStart=&timeOfTheGameEnd=&teamIds=#{away_id}&stageId=&sortBy=xG&sortAscending=false&page=&numberOfTeamsToPick=&isCurrent=true&formation=&incPens=true&against=false"
+
+  br = Watir::Browser.new
+  br.goto(home_url)
+
+  cookies = br.cookies.to_a  # Export all cookies
+
+  # Save cookies to a file (optional, for preserving between sessions)
+  File.open('cookies.json', 'w') do |f|
+    f.write(cookies.to_json)
+  end
+
+  home_xgs = starting_eleven[:home].each_with_object({}) do |p, hsh|
+    hsh[p] = JSON.parse(br.elements.first.text)['playerTableStats'].select{|x| x['lastName'].include?(p)}&.first.try(:[], 'xGPerNinety') || 0
+  end
+
+  br.goto(away_url)
+  away_xgs = starting_eleven[:away].each_with_object({}) do |p, hsh|
+    hsh[p] = JSON.parse(br.elements.first.text)['playerTableStats'].select{|x| x['lastName'].include?(p)}&.first.try(:[], 'xGPerNinety') || 0
+  end
+
+  br.quit
+
+  br = Watir::Browser.new
+  br.goto(home_team_url)
+  binding.pry
+  away_xgs = starting_eleven[:away].each_with_object({}) do |p, hsh|
+    hsh[p] = JSON.parse(br.elements.first.text)['playerTableStats'].select{|x| x['lastName'].include?(p)}&.first.try(:[], 'xGPerNinety') || 0
+  end
+
+  br.goto(away_team_url)
+  away_xgs = starting_eleven[:away].each_with_object({}) do |p, hsh|
+    hsh[p] = JSON.parse(br.elements.first.text)['playerTableStats'].select{|x| x['lastName'].include?(p)}&.first.try(:[], 'xGPerNinety') || 0
+  end
+
+  stats = {
+    home_xgs: home_xgs,
+    away_xgs: away_xgs,
+    home_xga: home_team_xga,
+    away_xga: away_team_xga
+  }
 
   stats
 end
@@ -333,7 +371,7 @@ if ARGV.count < 3
     next unless m[:url]
     puts "#{NAMES_MAP[m[:home]] || m[:home]} - #{NAMES_MAP[m[:away]] || m[:away]}"
     match_xgs = xgs(
-      (NAMES_MAP[m[:home]] || m[:home]).split(' ').join('_'), (NAMES_MAP[m[:away]] || m[:away]).split(' ').join('_'), ARGV[2] || starting_eleven( m[:url])
+      (NAMES_MAP[m[:home]] || m[:home]).split(' ').join('_'), (NAMES_MAP[m[:away]] || m[:away]).split(' ').join('_'), m[:home_id], m[:away_id], ARGV[2] || starting_eleven( m[:url])
     )
     next unless match_xgs
     simulate_match(NAMES_MAP[m[:home]] || m[:home], NAMES_MAP[m[:away]] || m[:away], match_xgs)
