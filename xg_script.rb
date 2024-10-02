@@ -37,13 +37,12 @@ NAMES_MAP = {
 
 NUMBER_OF_SIMULATIONS = 10000
 
-AVAILABLE_LEAGUES = ['France-Ligue-1', 'England-Premier-League', 'Spain-LaLiga', 'Germany-Bundesliga', 'Italy-Serie-A', 'Europe-Champions-League']
+AVAILABLE_LEAGUES = ['France-Ligue-1', 'England-Premier-League', 'Spain-LaLiga', 'Germany-Bundesliga', 'Italy-Serie-A', 'Europe-Champions-League', 'Europa League']
 #AVAILABLE_LEAGUES = ['England-Premier-League', 'Spain-LaLiga', 'Germany-Bundesliga']
 
-def games(url)
+def games_old(url)
   br = Watir::Browser.new
   br.goto(url)
-
   a = br.elements(class: 'Match-module_match__XlKTY').map do |x|
     {
       home: x.elements(class: 'Match-module_teamName__GoJbS').first.elements.first.inner_html,
@@ -55,11 +54,21 @@ def games(url)
   a.select { |x| AVAILABLE_LEAGUES.any? { |y| x[:url]&.include?(y) } }
 end
 
-def games_tmp(url)
-  response = HTTParty.get(url);0
-  JSON.parse(response.body)['tournaments'].
+def games(url)
+  br = Watir::Browser.new
+  br.goto(url)
+  a = JSON.parse(br.elements.first.text)['tournaments'].
     select { |x| AVAILABLE_LEAGUES.include?(x['tournamentName']) }.
-    map { |x| x['matches'].map{ |g| { home: g['homeTeamName'], away: g['awayTeamName'] } } }.flatten
+    map { |x| x['matches'].map do |g|
+      {
+        home: g['homeTeamName'],
+        away: g['awayTeamName'],
+        url: "https://www.whoscored.com/Matches/#{g['id']}/Preview/"
+      }
+    end
+  }.flatten
+  br.quit
+  a
 end
 
 def starting_eleven(url)
@@ -318,7 +327,8 @@ def above_threshold(matches)
 end
 
 if ARGV.count < 3
-  matches = games('https://www.whoscored.com/')
+  date_str = Date.today.strftime("%Y%m%d")
+  matches = games("https://www.whoscored.com/livescores/data?d=#{date_str}&isSummary=true")
   matches.each do |m|
     next unless m[:url]
     puts "#{NAMES_MAP[m[:home]] || m[:home]} - #{NAMES_MAP[m[:away]] || m[:away]}"
