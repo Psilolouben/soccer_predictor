@@ -44,11 +44,12 @@ NAMES_MAP = {
 NUMBER_OF_SIMULATIONS = 10000
 
 AVAILABLE_LEAGUES = ['LaLiga', 'Serie A', 'Bundesliga', 'Ligue 1',
-                     'Europe-Champions-League', 'Europa League',
+                     'Champions League', 'Europa League',
                      'Championship', 'Premiership', 'Liga Portugal',
                      'Premier League', 'Super Lig', 'Eredivisie']
 
 def games(url)
+  @br = Watir::Browser.new
   @br.goto(url)
   a = JSON.parse(@br.elements.first.text)['tournaments'].
     select { |x| AVAILABLE_LEAGUES.include?(x['tournamentName']) }.
@@ -59,14 +60,18 @@ def games(url)
         home_id: g['homeTeamId'],
         away: g['awayTeamName'],
         away_id: g['awayTeamId'],
-        url: "https://www.whoscored.com/Matches/#{g['id']}/Preview/"
+        url: "https://www.whoscored.com/Matches/#{g['id']}/Preview/",
+        tournament_id: x['tournamentId']
       }
     end
   }.flatten
   a
+ensure
+  @br.quit
 end
 
 def starting_eleven(url)
+  @br = Watir::Browser.new
   @br.goto(url)
   @br.elements(class: 'player-name player-link cnt-oflow rc').wait_until(timeout: 60) do |p|
     p.all?{ |x| !x.inner_html.empty? }
@@ -77,25 +82,37 @@ def starting_eleven(url)
     away: @br.elements(class: 'player-name player-link cnt-oflow rc').map(&:inner_html).reverse.take(11)
   }
   a
+ensure
+  @br.quit
 end
 
 def goal_and_assist(goal, assist)
   (goal + assist - (goal * assist)) * 100
 end
 
-def xgs_new(home_team, away_team, home_id, away_id, starting_eleven)
-  home_url = "https://www.whoscored.com/StatisticsFeed/1/GetPlayerStatistics?category=xg-stats&subcategory=summary&statsAccumulationType=0&isCurrent=true&playerId=&teamIds=#{home_id}&sortBy=xg&sortAscending=false&field=Overall&isMinApp=false&page=&includeZeroValues=true&numberOfPlayersToPick=&incPens=true"
-  away_url = "https://www.whoscored.com/StatisticsFeed/1/GetPlayerStatistics?category=xg-stats&subcategory=summary&statsAccumulationType=0&isCurrent=true&playerId=&teamIds=#{away_id}&sortBy=xg&sortAscending=false&field=Overall&isMinApp=false&page=&includeZeroValues=true&numberOfPlayersToPick=&incPens=true"
+def xgs_new(home_team, away_team, home_id, away_id, starting_eleven, competition_id)
+  @br = Watir::Browser.new
+  home_url = "https://www.whoscored.com/StatisticsFeed/1/GetPlayerStatistics?category=xg-stats&subcategory=summary&statsAccumulationType=0&tournamentOptions=#{competition_id}&isCurrent=true&playerId=&teamIds=#{home_id}&sortBy=xg&sortAscending=false&field=Overall&isMinApp=false&page=&includeZeroValues=true&numberOfPlayersToPick=&incPens=true"
+  away_url = "https://www.whoscored.com/StatisticsFeed/1/GetPlayerStatistics?category=xg-stats&subcategory=summary&statsAccumulationType=0&tournamentOptions=#{competition_id}&isCurrent=true&playerId=&teamIds=#{away_id}&sortBy=xg&sortAscending=false&field=Overall&isMinApp=false&page=&includeZeroValues=true&numberOfPlayersToPick=&incPens=true"
   home_team_url = "https://www.whoscored.com/Teams/#{home_id}/Show"
   away_team_url = "https://www.whoscored.com/Teams/#{away_id}/Show"
   @br.goto(home_url)
-
   xgs_warning = false
   home_xgs = starting_eleven[:home].each_with_object({}) do |p, hsh|
-    hsh[p] = JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['lastName'].include?(p)}&.first.try(:[], 'xGPerNinety') || 0
+    hsh[p] = JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['lastName'].include?(p) && x['tournamentId'] == competition_id}&.first.try(:[], 'xGPerNinety') || 0
   end
 
   xgs_warning = true if home_xgs.count{ |_,v| v.to_i == 0} < 9
+
+  home_cards_url = "https://www.whoscored.com/StatisticsFeed/1/GetPlayerStatistics?category=summary&subcategory=all&statsAccumulationType=0&isCurrent=true&playerId=&teamIds=#{home_id}&matchId=&stageId=&tournamentOptions=#{competition_id}&sortBy=Rating&sortAscending=&age=&ageComparisonType=&appearances=&appearancesComparisonType=&field=Overall&nationality=&positionOptions=&timeOfTheGameEnd=&timeOfTheGameStart=&isMinApp=false&page=&includeZeroValues=true&numberOfPlayersToPick=&incPens="
+  @br.goto(home_cards_url)
+
+  home_cards = starting_eleven[:home].each_with_object({}) do |p, hsh|
+    yellow = JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['lastName'].include?(p) && x['tournamentId'] == competition_id}&.first.try(:[], 'yellowCard') || 0
+    red = JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['lastName'].include?(p) && x['tournamentId'] == competition_id}&.first.try(:[], 'redCard') || 0
+    apps = JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['lastName'].include?(p) && x['tournamentId'] == competition_id}&.first.try(:[], 'apps') || 0
+    hsh[p] = apps.zero? ? 0 : ((yellow + red) / apps.to_f)
+  end
 
   @br.goto(away_url)
   away_xgs = starting_eleven[:away].each_with_object({}) do |p, hsh|
@@ -104,36 +121,83 @@ def xgs_new(home_team, away_team, home_id, away_id, starting_eleven)
 
   xgs_warning = true if away_xgs.count{ |_,v| v.to_i == 0} < 9
 
-  @br.goto(home_team_url)
-  if @br.button(text: "AGREE").exists?
-    @br.button(text: "AGREE").click
-  elsif @br.a(text: "AGREE").exists?
-    @br.a(text: "AGREE").click
+  away_cards_url = "https://www.whoscored.com/StatisticsFeed/1/GetPlayerStatistics?category=summary&subcategory=all&statsAccumulationType=0&isCurrent=true&playerId=&teamIds=#{away_id}&matchId=&stageId=&tournamentOptions=#{competition_id}&sortBy=Rating&sortAscending=&age=&ageComparisonType=&appearances=&appearancesComparisonType=&field=Overall&nationality=&positionOptions=&timeOfTheGameEnd=&timeOfTheGameStart=&isMinApp=false&page=&includeZeroValues=true&numberOfPlayersToPick=&incPens="
+  @br.goto(away_cards_url)
+
+  away_cards = starting_eleven[:away].each_with_object({}) do |p, hsh|
+    yellow = JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['lastName'].include?(p) && x['tournamentId'] == competition_id}&.first.try(:[], 'yellowCard') || 0
+    red = JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['lastName'].include?(p) && x['tournamentId'] == competition_id}&.first.try(:[], 'redCard') || 0
+    apps = JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['lastName'].include?(p) && x['tournamentId'] == competition_id}&.first.try(:[], 'apps') || 0
+    hsh[p] = apps.zero? ? 0 : ((yellow + red) / apps.to_f)
   end
+  sleep(1)
+  begin
+    @br.goto(home_team_url)
+    if @br.button(text: "AGREE").exists?
+      @br.button(text: "AGREE").click
+    elsif @br.a(text: "AGREE").exists?
+      @br.a(text: "AGREE").click
+    end
+    sleep(1)
+    @br.a(text: "xG").wait_until(&:present?)
+    @br.a(text: "xG").click
+    sleep(1)
+    @br.a(text: "Against").wait_until(&:present?)
+    @br.a(text: "Against").click
+    sleep(1)
+    @br.wait_until(timeout: 60) { @br.div(id: 'statistics-team-table-xg').exists? }
+    @br.wait_until(timeout: 60) { @br.div(id: 'statistics-team-table-xg').trs.length > 1 }
 
-  @br.a(text: "xG").click
-  @br.a(text: "Against").click
-  @br.wait_until(timeout: 60) { @br.div(id: 'statistics-team-table-xg').exists? }
-  @br.wait_until(timeout: 60) { @br.div(id: 'statistics-team-table-xg').trs.length > 1 }
-  home_team_xga = @br.div(id: 'statistics-team-table-xg').divs.first.tables.first.tbodys.first.trs.first.tds[2].text.to_f / @br.div(id: 'statistics-team-table-xg').divs.first.tables.first.tbodys.first.trs.first.tds[1].text.to_f
+    sleep(1)
+    home_team_xga = nil
+    @br.div(id: 'statistics-team-table-xg').divs.first.tables.first.tbodys.first.trs.each do |tr|
+      ctournament_id = tr.first.a.href.split('Tournaments/').last.split('/').first.to_i
+      next unless ctournament_id == competition_id
 
-  sleep(5)
+      home_team_xga = tr.tds[2].text.to_f / tr.tds[1].text.to_f
+    end
+    sleep(1)
+    @br.goto(away_team_url)
+    @br.a(text: "xG").click
+    @br.a(text: "Against").click
+    @br.wait_until(timeout: 60) { @br.div(id: 'statistics-team-table-xg').exists? }
+    @br.wait_until(timeout: 60) { @br.div(id: 'statistics-team-table-xg').trs.length > 1 }
 
-  @br.goto(away_team_url)
-  @br.a(text: "xG").click
-  @br.a(text: "Against").click
-  @br.wait_until(timeout: 60) { @br.div(id: 'statistics-team-table-xg').exists? }
-  @br.wait_until(timeout: 60) { @br.div(id: 'statistics-team-table-xg').trs.length > 1 }
-  away_team_xga = @br.div(id: 'statistics-team-table-xg').divs.first.tables.first.tbodys.first.trs.first.tds[2].text.to_f / @br.div(id: 'statistics-team-table-xg').divs.first.tables.first.tbodys.first.trs.first.tds[1].text.to_f
+    sleep(1)
+    away_team_xga = nil
+
+    @br.div(id: 'statistics-team-table-xg').divs.first.tables.first.tbodys.first.trs.each do |tr|
+      ctournament_id = tr.first.a.href.split('Tournaments/').last.split('/').first.to_i
+      next unless ctournament_id == competition_id
+
+      away_team_xga = tr.tds[2].text.to_f / tr.tds[1].text.to_f
+    end
+  rescue Selenium::WebDriver::Error::StaleElementReferenceError
+    puts "Encountered a stale element reference, retrying..."
+    retry
+  rescue Net::ReadTimeout => e
+    puts "Encountered a timeout, retrying..."
+    retry
+  rescue Watir::Wait::TimeoutError => e
+    puts "Encountered a timeout, retrying..."
+    retry
+  end
 
   stats = {
     home_xgs: home_xgs,
     away_xgs: away_xgs,
     xgs_warning: xgs_warning,
     home_xga: home_team_xga,
-    away_xga: away_team_xga
+    away_xga: away_team_xga,
+    home_cards: home_cards,
+    away_cards: home_cards
   }
   stats
+rescue => e
+ binding.pry
+ensure
+  @br.quit
+  return stats
 end
 
 def write_to_index_file(res)
@@ -143,12 +207,13 @@ def write_to_index_file(res)
 end
 
 def export_to_csv(proposals)
-  headers = ['Home', 'Away', '1X', 'X2', '12', 'O15', 'U15', 'O25', 'U25', 'O35', 'U35', 'GG', 'Missing XGS']
+  headers = ['Home', 'Away','1', 'X', '2', '1X', 'X2', '12', 'O15', 'U15', 'O25', 'U25', 'O35', 'U35', 'GG', 'Missing XGS', 'Both Cards']
   CSV.open("bet_proposals.csv", "a", :write_headers=> (!File.exist?("bet_proposals.csv") || !CSV.read("bet_proposals.csv", headers: true).headers == headers),
                                      :headers => headers, col_sep: ';') do |csv|
     proposals.each do |game|
-      puts game if game.except(:home_team, :away_team, :missing_xgs).values.any?{|v| v.to_i > 80}
-      csv << [game[:home_team], game[:away_team], game[:home] + game[:draw], game[:draw] + game[:away], game[:home] + game[:away], game[:over15], game[:under15], game[:over25], game[:under25], game[:over35], game[:under35], game[:gg], game[:missing_xgs]]
+      #puts "#{game[:home_team]}-#{game[:away_team]}: #{game.except(:home_team, :away_team, :missing_xgs).values.select{|k, v| v.to_i > 80}.join(',')}"
+      puts game if game.except(:home_team, :away_team, :missing_xgs).values.any?{|v| v.to_i > 80} && !game[:missing_xgs]
+      csv << [game[:home_team], game[:away_team], game[:home], game[:draw], game[:away], game[:home] + game[:draw], game[:draw] + game[:away], game[:home] + game[:away], game[:over15], game[:under15], game[:over25], game[:under25], game[:over35], game[:under35], game[:gg], game[:missing_xgs], game[:both_cards]]
     end
   end;0
 end
@@ -189,14 +254,14 @@ def simulate_match(home_team, away_team, stats)
     away_xg_stats = stats[:away_xgs].transform_values { |x| Distribution::Poisson.rng(x) }.select{|_, v| v > 0}
     #home_assist_stats = stats[:home_xas].transform_values { |x| Distribution::Poisson.rng(x) }.select{|_, v| v > 0}
     #away_assist_stats = stats[:away_xas].transform_values { |x| Distribution::Poisson.rng(x) }.select{|_, v| v > 0}
-    #home_yellow_cards = stats[:home_cards].transform_values { |x| Distribution::Poisson.rng(x) }.select{|_, v| v > 0}
-    #away_yellow_cards = stats[:away_cards].transform_values { |x| Distribution::Poisson.rng(x) }.select{|_, v| v > 0}
+    home_yellow_cards = stats[:home_cards].transform_values { |x| Distribution::Poisson.rng(x) }.select{|_, v| v > 0}
+    away_yellow_cards = stats[:away_cards].transform_values { |x| Distribution::Poisson.rng(x) }.select{|_, v| v > 0}
 
     home_xga = Distribution::Poisson.rng(stats[:home_xga]).to_i
     away_xga = Distribution::Poisson.rng(stats[:away_xga]).to_i
 
-    home = [home_xg_stats.sum{ |_, v| v }, home_xga].min
-    away = [away_xg_stats.sum{ |_, v| v }, away_xga].min
+    home = [home_xg_stats.sum{ |_, v| v }, away_xga].min
+    away = [away_xg_stats.sum{ |_, v| v }, home_xga].min
 
     home_scorers << home_xg_stats.keys
     away_scorers << away_xg_stats.keys
@@ -239,12 +304,11 @@ def simulate_match(home_team, away_team, stats)
       res[:two_three] += 1
     end
 
-    #home_yellow = home_yellow_cards.sum{ |_, v| v }
-    #away_yellow = away_yellow_cards.sum{ |_, v| v }
-
-    #if home_yellow > 0 && away_yellow > 0
-    #  res[:both_cards] += 1
-    #end
+    home_yellow = home_yellow_cards.sum{ |_, v| v }
+    away_yellow = away_yellow_cards.sum{ |_, v| v }
+    if home_yellow > 0 && away_yellow > 0
+      res[:both_cards] += 1
+    end
   end
 
   return res.merge(res.except(:home_team, :away_team, :missing_xgs).transform_values{ |v| v / (NUMBER_OF_SIMULATIONS / 100.0) })
@@ -277,7 +341,7 @@ begin
   results = []
   if ARGV.count < 3
     ids = read_index_file
-    @br = Watir::Browser.new
+
     date_str = Date.today.strftime("%Y%m%d")
     matches = games("https://www.whoscored.com/livescores/data?d=#{date_str}&isSummary=true")
 
@@ -289,13 +353,18 @@ begin
       match_xgs = xgs_new(
         (NAMES_MAP[m[:home]] || m[:home]).split(' ').join('_'),
         (NAMES_MAP[m[:away]] || m[:away]).split(' ').join('_'),
-        m[:home_id], m[:away_id], ARGV[2] || starting_eleven( m[:url])
+        m[:home_id],
+        m[:away_id],
+        ARGV[2] || starting_eleven( m[:url]),
+        m[:tournament_id]
       )
+      binding.pry
       next unless match_xgs
 
       results << simulate_match(NAMES_MAP[m[:home]] || m[:home], NAMES_MAP[m[:away]] || m[:away], match_xgs)
       write_to_index_file(m[:id])
     rescue => e
+      #binding.pry
       next
     end
 
@@ -306,5 +375,4 @@ begin
   end
 ensure
   export_to_csv(results)
-  @br.quit
 end
