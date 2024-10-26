@@ -46,13 +46,13 @@ NUMBER_OF_SIMULATIONS = 10000
 AVAILABLE_LEAGUES = ['LaLiga', 'Serie A', 'Bundesliga', 'Ligue 1',
                      'Champions League', 'Europa League',
                      'Championship', 'Premiership', 'Liga Portugal',
-                     'Premier League', 'Super Lig', 'Eredivisie']
+                     'Super Lig', 'Eredivisie']
 
 def games(url)
   @br = Watir::Browser.new
   @br.goto(url)
   a = JSON.parse(@br.elements.first.text)['tournaments'].
-    select { |x| AVAILABLE_LEAGUES.include?(x['tournamentName']) }.
+  select { |x| AVAILABLE_LEAGUES.include?(x['tournamentName']) }.
     map { |x| x['matches'].map do |g|
       {
         id: g['id'],
@@ -99,10 +99,11 @@ def xgs_new(home_team, away_team, home_id, away_id, starting_eleven, competition
   @br.goto(home_url)
   xgs_warning = false
   home_xgs = starting_eleven[:home].each_with_object({}) do |p, hsh|
-    hsh[p] = JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['lastName'].include?(p) && x['tournamentId'] == competition_id}&.first.try(:[], 'xGPerNinety') || 0
+    player_stats = JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['lastName'].include?(p) && x['tournamentId'] == competition_id}
+    x_shots = player_stats&.first.try(:[], 'apps').to_f.zero? ? 1 : player_stats&.first.try(:[], 'totalShots').to_f / player_stats&.first.try(:[], 'apps').to_f
+    hsh[p] = ([player_stats&.first.try(:[], 'xGPerShot').to_f] * [x_shots.to_i, 1].max)
   end
-
-  xgs_warning = true if home_xgs.count{ |_,v| v.to_i == 0} < 9
+  xgs_warning = true if home_xgs.count{ |_,v| v.all?{|x| x != 0} } < 9
 
   home_cards_url = "https://www.whoscored.com/StatisticsFeed/1/GetPlayerStatistics?category=summary&subcategory=all&statsAccumulationType=0&isCurrent=true&playerId=&teamIds=#{home_id}&matchId=&stageId=&tournamentOptions=#{competition_id}&sortBy=Rating&sortAscending=&age=&ageComparisonType=&appearances=&appearancesComparisonType=&field=Overall&nationality=&positionOptions=&timeOfTheGameEnd=&timeOfTheGameStart=&isMinApp=false&page=&includeZeroValues=true&numberOfPlayersToPick=&incPens="
   @br.goto(home_cards_url)
@@ -116,10 +117,12 @@ def xgs_new(home_team, away_team, home_id, away_id, starting_eleven, competition
 
   @br.goto(away_url)
   away_xgs = starting_eleven[:away].each_with_object({}) do |p, hsh|
-    hsh[p] = JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['lastName'].include?(p)}&.first.try(:[], 'xGPerNinety') || 0
+    player_stats = JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['lastName'].include?(p) && x['tournamentId'] == competition_id}
+    x_shots = player_stats&.first.try(:[], 'apps').to_f.zero? ? 1 : player_stats&.first.try(:[], 'totalShots').to_f / player_stats&.first.try(:[], 'apps').to_f
+    hsh[p] = ([player_stats&.first.try(:[], 'xGPerShot').to_f] * [x_shots.to_i, 1].max)
   end
 
-  xgs_warning = true if away_xgs.count{ |_,v| v.to_i == 0} < 9
+  xgs_warning = true if away_xgs.count{ |_,v| v.all?{|x| x != 0} } < 9
 
   away_cards_url = "https://www.whoscored.com/StatisticsFeed/1/GetPlayerStatistics?category=summary&subcategory=all&statsAccumulationType=0&isCurrent=true&playerId=&teamIds=#{away_id}&matchId=&stageId=&tournamentOptions=#{competition_id}&sortBy=Rating&sortAscending=&age=&ageComparisonType=&appearances=&appearancesComparisonType=&field=Overall&nationality=&positionOptions=&timeOfTheGameEnd=&timeOfTheGameStart=&isMinApp=false&page=&includeZeroValues=true&numberOfPlayersToPick=&incPens="
   @br.goto(away_cards_url)
@@ -250,8 +253,9 @@ def simulate_match(home_team, away_team, stats)
   puts "Simulating games..."
 
   NUMBER_OF_SIMULATIONS.times do
-    home_xg_stats = stats[:home_xgs].transform_values { |x| Distribution::Poisson.rng(x) }.select{|_, v| v > 0}
-    away_xg_stats = stats[:away_xgs].transform_values { |x| Distribution::Poisson.rng(x) }.select{|_, v| v > 0}
+    home_xg_stats = stats[:home_xgs].transform_values { |x| x.map{|y| rand < y}}
+    away_xg_stats = stats[:away_xgs].transform_values { |x| x.map{|y| rand < y}}
+
     #home_assist_stats = stats[:home_xas].transform_values { |x| Distribution::Poisson.rng(x) }.select{|_, v| v > 0}
     #away_assist_stats = stats[:away_xas].transform_values { |x| Distribution::Poisson.rng(x) }.select{|_, v| v > 0}
     home_yellow_cards = stats[:home_cards].transform_values { |x| Distribution::Poisson.rng(x) }.select{|_, v| v > 0}
@@ -260,8 +264,8 @@ def simulate_match(home_team, away_team, stats)
     home_xga = Distribution::Poisson.rng(stats[:home_xga]).to_i
     away_xga = Distribution::Poisson.rng(stats[:away_xga]).to_i
 
-    home = [home_xg_stats.sum{ |_, v| v }, away_xga].min
-    away = [away_xg_stats.sum{ |_, v| v }, home_xga].min
+    home = [home_xg_stats.values.flatten.count{|x| x}, away_xga].min
+    away = [away_xg_stats.values.flatten.count{|x| x}, home_xga].min
 
     home_scorers << home_xg_stats.keys
     away_scorers << away_xg_stats.keys
@@ -358,7 +362,6 @@ begin
         ARGV[2] || starting_eleven( m[:url]),
         m[:tournament_id]
       )
-      binding.pry
       next unless match_xgs
 
       results << simulate_match(NAMES_MAP[m[:home]] || m[:home], NAMES_MAP[m[:away]] || m[:away], match_xgs)
