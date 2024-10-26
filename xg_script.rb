@@ -46,7 +46,7 @@ NUMBER_OF_SIMULATIONS = 10000
 AVAILABLE_LEAGUES = ['LaLiga', 'Serie A', 'Bundesliga', 'Ligue 1',
                      'Champions League', 'Europa League',
                      'Championship', 'Premiership', 'Liga Portugal',
-                     'Premier League', 'Super Lig', 'Eredivisie']
+                     'Super Lig', 'Eredivisie']
 
 def games(url)
   @br = Watir::Browser.new
@@ -54,6 +54,8 @@ def games(url)
   a = JSON.parse(@br.elements.first.text)['tournaments'].
     select { |x| AVAILABLE_LEAGUES.include?(x['tournamentName']) }.
     map { |x| x['matches'].map do |g|
+      next if Time.now > Time.find_zone("EET").parse(g['startTime'])
+
       {
         id: g['id'],
         home: g['homeTeamName'],
@@ -139,6 +141,11 @@ def xgs_new(home_team, away_team, home_id, away_id, starting_eleven, competition
       @br.a(text: "AGREE").click
     end
     sleep(1)
+    if @br.button(class: 'webpush-swal2-close').exists?
+      @br.button(class: 'webpush-swal2-close').click
+    end
+
+    sleep(1)
     @br.a(text: "xG").wait_until(&:present?)
     @br.a(text: "xG").click
     sleep(1)
@@ -222,6 +229,10 @@ def read_index_file
   File.readlines('index.txt', chomp: true).map(&:to_i)
 end
 
+def print_proposals()
+
+end
+
 def simulate_match(home_team, away_team, stats)
   res = {
     home_team: home_team,
@@ -257,11 +268,10 @@ def simulate_match(home_team, away_team, stats)
     home_yellow_cards = stats[:home_cards].transform_values { |x| Distribution::Poisson.rng(x) }.select{|_, v| v > 0}
     away_yellow_cards = stats[:away_cards].transform_values { |x| Distribution::Poisson.rng(x) }.select{|_, v| v > 0}
 
-    home_xga = Distribution::Poisson.rng(stats[:home_xga]).to_i
-    away_xga = Distribution::Poisson.rng(stats[:away_xga]).to_i
-
-    home = [home_xg_stats.sum{ |_, v| v }, away_xga].min
-    away = [away_xg_stats.sum{ |_, v| v }, home_xga].min
+    home_xga = Distribution::Poisson.rng(stats[:home_xga])
+    away_xga = Distribution::Poisson.rng(stats[:away_xga])
+    home = ([home_xg_stats.sum{ |_, v| v }, away_xga].min + ((home_xg_stats.sum{ |_, v| v } - away_xga).abs / 4.0)).round
+    away = ([away_xg_stats.sum{ |_, v| v }, home_xga].min + ((away_xg_stats.sum{ |_, v| v } - home_xga).abs / 4.0)).round
 
     home_scorers << home_xg_stats.keys
     away_scorers << away_xg_stats.keys
@@ -314,35 +324,12 @@ def simulate_match(home_team, away_team, stats)
   return res.merge(res.except(:home_team, :away_team, :missing_xgs).transform_values{ |v| v / (NUMBER_OF_SIMULATIONS / 100.0) })
 end
 
-def above_threshold(matches)
-  matches.reject(&:empty?).select do |x|
-    x = x.with_indifferent_access
-    [x['home_win_perc'], x['away_win_perc'], x['draw_perc']].any? { |r| r > SINGLE_THRESHOLD } ||
-      (x['draw_perc'] > DRAW_THRESHOLD) ||
-      [x[:home_win_perc] + x[:away_win_perc], x[:home_win_perc] + x[:draw_perc], x[:away_win_perc] + x[:draw_perc]].any? { |r| r > DOUBLE_THRESHOLD } ||
-      x['under_goals'].values.any? { |v| v > UNDER_OVER_THRESHOLD } ||
-      x['over_goals'].values.any? { |v| v > UNDER_OVER_THRESHOLD } ||
-      (x['under_perc'] > UNDER_OVER_THRESHOLD) ||
-      (x['goal_goal'] > UNDER_OVER_THRESHOLD) ||
-      (x['no_goal_goal'] > UNDER_OVER_THRESHOLD) ||
-      [x['over_goals_half']['05'], x['over_goals_half']['15']].any? { |r| r > (UNDER_OVER_HALF_THRESHOLD) } ||
-      [x['over_goals_half']['05'], x['over_goals_half']['15']].any? { |r| r < (100 - UNDER_OVER_HALF_THRESHOLD) } ||
-      [x['over_cards']['3.5'], x['over_cards']['4.5'], x['over_cards']['5.5']].any? { |r| r > (100 - CARDS_THRESHOLD) } ||
-      [x['over_cards']['3.5'], x['over_cards']['4.5'], x['over_cards']['5.5']].any? { |r| r < (CARDS_THRESHOLD) } ||
-      (x['over_05_penalties'] > PENALTY_THRESHOLD) ||
-      (x['over_05_red_cards'] > RED_CARD_THRESHOLD) ||
-      x[:home_players].any? { |r| r.values.first[:goals] > (SCORER_THRESHOLD) ||  r.values.first[:assists] > (SCORER_THRESHOLD)} ||
-      x[:away_players].any? { |r| r.values.first[:goals] > (SCORER_THRESHOLD) ||  r.values.first[:assists] > (SCORER_THRESHOLD)} ||
-      (x[:home_card][:yes] > 85) && (x[:away_card][:yes] > 85)
-  end
-end
-
 begin
   results = []
   if ARGV.count < 3
     ids = read_index_file
 
-    date_str = Date.today.strftime("%Y%m%d")
+    date_str = Date.tomorrow.strftime("%Y%m%d")
     matches = games("https://www.whoscored.com/livescores/data?d=#{date_str}&isSummary=true")
 
     matches.each do |m|
@@ -358,7 +345,6 @@ begin
         ARGV[2] || starting_eleven( m[:url]),
         m[:tournament_id]
       )
-      binding.pry
       next unless match_xgs
 
       results << simulate_match(NAMES_MAP[m[:home]] || m[:home], NAMES_MAP[m[:away]] || m[:away], match_xgs)
@@ -374,5 +360,6 @@ begin
     simulate_match(ARGV[0], ARGV[1], stats)
   end
 ensure
+  print_proposals()
   export_to_csv(results)
 end
