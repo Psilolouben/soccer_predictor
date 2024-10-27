@@ -17,17 +17,19 @@ require 'csv'
 
 
 # THRESHOLDS
-
-UNDER_OVER_HALF_THRESHOLD = 80
-SINGLE_THRESHOLD = 60
-DRAW_THRESHOLD = 35
-DOUBLE_THRESHOLD = 75
-UNDER_OVER_THRESHOLD = 70
-CORNER_THRESHOLD = 20
-CARDS_THRESHOLD = 20
-PENALTY_THRESHOLD = 40
-RED_CARD_THRESHOLD = 40
-SCORER_THRESHOLD = 40
+THRESHOLDS = {
+  UNDER_OVER_HALF_THRESHOLD: { index: [-1], value: 80 },
+  SINGLE_THRESHOLD: { index: [2,3,4], value: 60 },
+  DRAW_THRESHOLD: { index: [3], value: 35 },
+  DOUBLE_THRESHOLD: { index: [5, 6, 7], value: 75 },
+  UNDER_OVER_THRESHOLD: { index: [8, 9, 10, 11, 12, 13], value: 75 },
+  GG_THRESHOLD: { index: [14], value: 75 },
+  CORNER_THRESHOLD: { index: [-1], value: 80 },
+  CARDS_THRESHOLD: { index: [16], value: 80 },
+  PENALTY_THRESHOLD: { index: [-1], value: 80 },
+  RED_CARD_THRESHOLD: { index: [-1], value: 80 },
+  SCORER_THRESHOLD: { index: [-1], value: 80 }
+}
 
 NAMES_MAP = {
   'Wolves' => 'Wolverhampton_Wanderers',
@@ -46,7 +48,7 @@ NUMBER_OF_SIMULATIONS = 10000
 AVAILABLE_LEAGUES = ['LaLiga', 'Serie A', 'Bundesliga', 'Ligue 1',
                      'Champions League', 'Europa League',
                      'Championship', 'Premiership', 'Liga Portugal',
-                     'Super Lig', 'Eredivisie']
+                     'Premier League', 'Super Lig', 'Eredivisie']
 
 def games(url)
   @br = Watir::Browser.new
@@ -63,10 +65,11 @@ def games(url)
         away: g['awayTeamName'],
         away_id: g['awayTeamId'],
         url: "https://www.whoscored.com/Matches/#{g['id']}/Preview/",
-        tournament_id: x['tournamentId']
+        tournament_id: x['tournamentId'],
+        tournament_name: x['tournamentName']
       }
     end
-  }.flatten
+  }.flatten.compact
   a
 ensure
   @br.quit
@@ -201,7 +204,7 @@ def xgs_new(home_team, away_team, home_id, away_id, starting_eleven, competition
   }
   stats
 rescue => e
- binding.pry
+ #binding.pry
 ensure
   @br.quit
   return stats
@@ -229,8 +232,22 @@ def read_index_file
   File.readlines('index.txt', chomp: true).map(&:to_i)
 end
 
-def print_proposals()
+def import_from_csv
+  CSV.read("bet_proposals.csv", headers: true, col_sep: ';').map(&:to_h)
+end
 
+def print_proposals
+  games = import_from_csv
+  proposals = Hash.new {|hsh, key| hsh[key] = [] }
+  games.each do |g|
+    g.each_with_index do |(k,v), i|
+      next if ['Missing XGS', 'Home', 'Away'].include?(k)
+
+      proposals["#{g['Home']}-#{g['Away']}"] << k if v.to_f > THRESHOLDS.select{|_,v| v[:index].include?(i)}.values.first[:value]
+      proposals
+    end
+  end
+  proposals.each{ |k, v| pp "#{k} -> #{v.join(',')}"}
 end
 
 def simulate_match(home_team, away_team, stats)
@@ -329,9 +346,8 @@ begin
   if ARGV.count < 3
     ids = read_index_file
 
-    date_str = Date.tomorrow.strftime("%Y%m%d")
+    date_str = Date.today.strftime("%Y%m%d")
     matches = games("https://www.whoscored.com/livescores/data?d=#{date_str}&isSummary=true")
-
     matches.each do |m|
       next if ids.include?(m[:id])
       next unless m[:url]
@@ -360,6 +376,6 @@ begin
     simulate_match(ARGV[0], ARGV[1], stats)
   end
 ensure
-  print_proposals()
   export_to_csv(results)
+  print_proposals
 end
