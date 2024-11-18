@@ -1,0 +1,22 @@
+bet possibility CSV file with the following columns
+column delimiter is ";"
+Home Away 1 X 2 1X X2 12 O15 U15 O25 U25 O35 U35 GG MissingXGS BothCards
+
+Eligibility Golden rules:
+All games with MissingXGS are automatically considered NOT eligible
+
+A game is eligible if at least one of the following rules apply:
+- 1 or X or 2 is more than 60%
+- 1X or X2 or 12 is more than 75%
+- Any of the O15 U15 O25 U25 O35 U35 is over 80%
+- GG (goal-goal) is over 80%
+- BothCards is over 80%
+
+The output will be a list with the following format
+
+Team1(bold) -(dash) Team2(bold): which of the columns made the threshold and the percentage of the possibility.
+Eligible odds to be grouped by game
+
+sorted by the incidents with the highest possibility descending.
+Lets set the threshold to 85%
+Ready for the file upload?

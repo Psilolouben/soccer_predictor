@@ -19,16 +19,16 @@ require 'csv'
 # THRESHOLDS
 THRESHOLDS = {
   UNDER_OVER_HALF_THRESHOLD: { index: [-1], value: 80 },
-  SINGLE_THRESHOLD: { index: [2,3,4], value: 60 },
+  SINGLE_THRESHOLD: { index: [2,4], value: 60 },
   DRAW_THRESHOLD: { index: [3], value: 35 },
   DOUBLE_THRESHOLD: { index: [5, 6, 7], value: 75 },
-  UNDER_OVER_THRESHOLD: { index: [8, 9, 10, 11, 12, 13], value: 75 },
-  GG_THRESHOLD: { index: [14], value: 75 },
+  UNDER_OVER_THRESHOLD: { index: [8, 9, 10, 11, 12, 13], value: 80 },
+  GG_THRESHOLD: { index: [14], value: 80 },
   CORNER_THRESHOLD: { index: [-1], value: 80 },
   CARDS_THRESHOLD: { index: [16], value: 80 },
   PENALTY_THRESHOLD: { index: [-1], value: 80 },
   RED_CARD_THRESHOLD: { index: [-1], value: 80 },
-  SCORER_THRESHOLD: { index: [-1], value: 80 }
+  SCORER_THRESHOLD: { index: [-1], value: 60 }
 }
 
 NAMES_MAP = {
@@ -48,15 +48,19 @@ NUMBER_OF_SIMULATIONS = 10000
 AVAILABLE_LEAGUES = ['LaLiga', 'Serie A', 'Bundesliga', 'Ligue 1',
                      'Champions League', 'Europa League',
                      'Championship', 'Premiership', 'Liga Portugal',
-                     'Premier League', 'Super Lig', 'Eredivisie']
+                     'Premier League', 'Super Lig', 'Eredivisie',
+                     'UEFA Nations League A', 'UEFA Nations League B',
+                     'UEFA Nations League C', 'UEFA Nations League D',
+                     'League One', 'League Two' ]
 
 def games(url)
   @br = Watir::Browser.new
   @br.goto(url)
+
   a = JSON.parse(@br.elements.first.text)['tournaments'].
-    select { |x| AVAILABLE_LEAGUES.include?(x['tournamentName']) }.
+    #select { |x| AVAILABLE_LEAGUES.include?(x['tournamentName'])}.
     map { |x| x['matches'].map do |g|
-      next if Time.now > Time.find_zone("EET").parse(g['startTime'])
+      next if DateTime.now > DateTime.parse(g['startTime']).utc
 
       {
         id: g['id'],
@@ -240,10 +244,12 @@ def print_proposals
   games = import_from_csv
   proposals = Hash.new {|hsh, key| hsh[key] = [] }
   games.each do |g|
+    next if g['Missing XGS'] == 'true'
+
     g.each_with_index do |(k,v), i|
       next if ['Missing XGS', 'Home', 'Away'].include?(k)
 
-      proposals["#{g['Home']}-#{g['Away']}"] << k if v.to_f > THRESHOLDS.select{|_,v| v[:index].include?(i)}.values.first[:value]
+      proposals["#{g['Home']}-#{g['Away']}"] << "#{k}(#{v})" if v.to_f > THRESHOLDS.select{|_,v| v[:index].include?(i)}.values.first[:value]
       proposals
     end
   end
@@ -266,7 +272,9 @@ def simulate_match(home_team, away_team, stats)
     over35: 0,
     gg: 0,
     two_three: 0,
-    both_cards: 0
+    both_cards: 0,
+    #home_scorers: {},
+    #away_scorers: {}
   }
 
   home_scorers = []
@@ -287,11 +295,11 @@ def simulate_match(home_team, away_team, stats)
 
     home_xga = Distribution::Poisson.rng(stats[:home_xga])
     away_xga = Distribution::Poisson.rng(stats[:away_xga])
-    home = ([home_xg_stats.sum{ |_, v| v }, away_xga].min + ((home_xg_stats.sum{ |_, v| v } - away_xga).abs / 4.0)).round
-    away = ([away_xg_stats.sum{ |_, v| v }, home_xga].min + ((away_xg_stats.sum{ |_, v| v } - home_xga).abs / 4.0)).round
+    home = ([home_xg_stats.sum{ |_, v| v }, away_xga].min + ((home_xg_stats.sum{ |_, v| v } - away_xga).abs / 3.333)).round
+    away = ([away_xg_stats.sum{ |_, v| v }, home_xga].min + ((away_xg_stats.sum{ |_, v| v } - home_xga).abs / 3.333)).round
 
-    home_scorers << home_xg_stats.keys
-    away_scorers << away_xg_stats.keys
+    home_scorers << home_xg_stats.each_with_object([]) { |k, arr| arr << [k[0]] * k[1] }.flatten.sample(home)
+    away_scorers << away_xg_stats.each_with_object([]) { |k, arr| arr << [k[0]] * k[1] }.flatten.sample(away)
     #home_assists << home_assist_stats.keys
     #away_assists << away_assist_stats.keys
 
@@ -338,7 +346,10 @@ def simulate_match(home_team, away_team, stats)
     end
   end
 
-  return res.merge(res.except(:home_team, :away_team, :missing_xgs).transform_values{ |v| v / (NUMBER_OF_SIMULATIONS / 100.0) })
+  #res[:home_scorers] = home_scorers.flatten.tally.transform_values{|x| x / (NUMBER_OF_SIMULATIONS / 100).to_f}
+  #res[:away_scorers] = away_scorers.flatten.tally.transform_values{|x| x / (NUMBER_OF_SIMULATIONS / 100).to_f}
+
+  return res.merge(res.except(:home_team, :away_team, :missing_xgs, :home_scorers, :away_scorers).transform_values{ |v| v / (NUMBER_OF_SIMULATIONS / 100.0) })
 end
 
 begin
@@ -364,6 +375,7 @@ begin
       next unless match_xgs
 
       results << simulate_match(NAMES_MAP[m[:home]] || m[:home], NAMES_MAP[m[:away]] || m[:away], match_xgs)
+
       write_to_index_file(m[:id])
     rescue => e
       #binding.pry
