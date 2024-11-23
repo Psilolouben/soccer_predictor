@@ -80,7 +80,9 @@ ensure
 end
 
 def starting_eleven(url)
-  @br = Watir::Browser.new
+  @br = Watir::Browser.new :chrome, headless: :true
+  @br.driver.manage.timeouts.page_load = 180 # Set a 3-minute timeout
+
   @br.goto(url)
   @br.elements(class: 'player-name player-link cnt-oflow rc').wait_until(timeout: 60) do |p|
     p.all?{ |x| !x.inner_html.empty? }
@@ -101,6 +103,8 @@ end
 
 def xgs_new(home_team, away_team, home_id, away_id, starting_eleven, competition_id)
   @br = Watir::Browser.new
+  @br.driver.manage.timeouts.page_load = 180 # Set a 3-minute timeout
+
   home_url = "https://www.whoscored.com/StatisticsFeed/1/GetPlayerStatistics?category=xg-stats&subcategory=summary&statsAccumulationType=0&tournamentOptions=#{competition_id}&isCurrent=true&playerId=&teamIds=#{home_id}&sortBy=xg&sortAscending=false&field=Overall&isMinApp=false&page=&includeZeroValues=true&numberOfPlayersToPick=&incPens=true"
   away_url = "https://www.whoscored.com/StatisticsFeed/1/GetPlayerStatistics?category=xg-stats&subcategory=summary&statsAccumulationType=0&tournamentOptions=#{competition_id}&isCurrent=true&playerId=&teamIds=#{away_id}&sortBy=xg&sortAscending=false&field=Overall&isMinApp=false&page=&includeZeroValues=true&numberOfPlayersToPick=&incPens=true"
   home_team_url = "https://www.whoscored.com/Teams/#{home_id}/Show"
@@ -141,6 +145,11 @@ def xgs_new(home_team, away_team, home_id, away_id, starting_eleven, competition
   end
   sleep(1)
   begin
+    binding.pry
+    url = "https://www.whoscored.com/StatisticsFeed/1/GetTeamStatistics"
+    response = HTTParty.get(url, query: query_params, headers: headers)
+    binding.pry
+
     @br.goto(home_team_url)
     if @br.button(text: "AGREE").exists?
       @br.button(text: "AGREE").click
@@ -218,6 +227,78 @@ def write_to_index_file(res)
   open("index.txt", 'a') { |f|
   f.puts res
 }
+end
+
+def query_params
+  {
+    category: 'summaryteam',
+    subcategory: 'all',
+    statsAccumulationType: '0',
+    field: 'Overall',
+    tournamentOptions: '',
+    timeOfTheGameStart: '',
+    timeOfTheGameEnd: '',
+    teamIds: '23777',
+    stageId: '',
+    sortBy: 'Rating',
+    sortAscending: '',
+    page: '',
+    numberOfTeamsToPick: '',
+    isCurrent: 'true',
+    formation: '',
+    incPens: '',
+    against: ''
+  }
+end
+
+def headers
+  {
+    'accept' => 'application/json, text/javascript, */*; q=0.01',
+    'accept-language' => 'en-GB,en-US;q=0.9,en;q=0.8',
+    'cache-control' => 'no-cache',
+    'cookie' => cookies,
+    'model-last-mode' => 'pOW14CDwuF1urhs/hDXK+y+i7dfVG+6o9sdttM2zMhk=',
+    'pragma' => 'no-cache',
+    'priority' => 'u=1, i',
+    'referer' => 'https://www.whoscored.com/Teams/23777/Show',
+    'sec-ch-ua' => '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+    'sec-ch-ua-mobile' => '?0',
+    'sec-ch-ua-platform' => '"macOS"',
+    'sec-fetch-dest' => 'empty',
+    'sec-fetch-mode' => 'cors',
+    'sec-fetch-site' => 'same-origin',
+    'user-agent' => 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    'x-requested-with' => 'XMLHttpRequest'
+  }
+end
+
+def cookies
+  #'_oid=8a45c561-b765-4a40-a97f-0aca4f7081de; _au_1d=AU1D-0100-001709297287-0ZP1A37R-NJZC; usprivacy=1Y--; _fbp=fb.1.1724099143502.430990829828205857; ct=GR; pbjs_pubcommonID=8b92bf3c-56b3-443c-9eec-b996ac061454; cookie=34a37bba-d570-43a4-b126-bfa481502d69; _cc_id=be72b03c10a1b7da9bb44cbcfde069d5; ccuid=14e3636b-b17c-4f36-a077-a581e6ccd470; _xpid=4697159903; _xpkey=PY33MWoW_zh4cKM9V_u2gQKRv7R1HFOD; uuid=6383E33A-6BFF-46F0-BD23-A2D853FE9878; _ga_58Q95H24XC=GS1.1.1727599333.1.0.1727600811.60.0.0; pbjs_unifiedID=%7B%22TDID_LOOKUP%22%3A%22FALSE%22%2C%22TDID_CREATED_AT%22%3A%222024-11-11T11%3A26%3A03%22%7D; euconsent-v2=CQIVlIAQIVlIAAKA1AENBQFsAP_gAEPgAAwIKlNX_G__bWlr8X73aftkeY1P9_h77sQxBhfJE-4FzLvW_JwXx2ExNA36tqIKmRIAu3TBIQNlGJDURVCgaogVryDMaEiUoTNKJ6BkiFMRM2dYCFxvm4tj-QCY5vr991dx2B-t7dr83dzyy4xHn3a5_2S0WJCdA5-tDfv9bROb-9IOd_x8v4v4_F_pE2_eT1l_tWvp7D9-cts7_XW89_fff_9Pn_-uB_-_3_vfBTUAkw0KiAMsiQkINAwggQAqCsICKBAAAACQNEBACYMCnYGAC6wkQAgBQADBACAAEGQAIAABIAEIgAgAKBAABAIFAAAAAAIBAAwMAAYALAQCAAEB0CFMCCAQLABIzIiFMCEIBIICWyoQSAIEFcIQizwAIBETBQAAAkAFIAAgLBYHEkgJWJBAFxBtAAAQAIBBAAUIpOzAEEAZstReKBtGVpAWD5gKOAAABAAA.f_gAAAAAAAAA; addtl_consent=1~43.3.9.6.9.13.6.4.15.9.5.2.11.8.1.3.2.10.33.4.15.17.2.9.20.7.20.5.20.7.2.2.1.4.40.4.14.9.3.10.8.9.6.6.9.41.5.3.1.27.1.17.10.9.1.8.6.2.8.3.4.146.65.1.17.1.18.25.35.5.18.9.7.41.2.4.18.24.4.9.6.5.2.14.25.3.2.2.8.28.8.6.3.10.4.20.2.17.10.11.1.3.22.16.2.6.8.6.11.6.5.33.11.8.11.28.12.1.5.2.17.9.6.40.17.4.9.15.8.7.3.12.7.2.4.1.7.12.13.22.13.2.6.8.10.1.4.15.2.4.9.4.5.4.7.13.5.15.17.4.14.10.15.2.5.6.2.2.1.2.14.7.4.8.2.9.10.18.12.13.2.18.1.1.3.1.1.9.7.2.16.5.19.8.4.8.5.4.8.4.4.2.14.2.13.4.2.6.9.6.3.2.2.3.7.3.6.10.11.9.19.8.3.3.1.2.3.9.19.26.3.10.13.4.3.4.6.3.3.3.4.1.1.6.11.4.1.11.6.1.10.13.3.2.2.4.3.2.2.7.15.7.14.4.3.4.5.4.3.2.2.5.5.3.9.7.9.1.5.3.7.10.11.1.3.1.1.2.1.3.2.6.1.12.8.1.3.1.1.2.2.7.7.1.4.3.6.1.2.1.4.1.1.4.1.1.2.1.8.1.7.4.3.3.3.5.3.15.1.15.10.28.1.2.2.12.3.4.1.6.3.4.7.1.3.1.4.1.5.3.1.3.4.1.5.2.3.1.2.2.6.2.1.2.2.2.4.1.1.1'
+  browser = Watir::Browser.new
+  browser.driver.manage.timeouts.page_load = 300 # Increase to 5 minutes
+
+  binding.pry
+  browser.goto('https://www.whoscored.com/Teams/23777/Show')
+
+  if browser.button(text: 'AGREE').present?
+    browser.button(text: 'AGREE').click
+  elsif browser.a(text: 'AGREE').present?
+    browser.a(text: 'AGREE').click
+  end
+
+  # Close any other pop-ups if necessary
+  if browser.button(class: 'webpush-swal2-close').exists?
+    browser.button(class: 'webpush-swal2-close').click
+  end
+
+  # Wait for the page to fully load
+  browser.div(class: 'team-header').wait_until(&:present?)
+
+  # Capture cookies
+  cookie_string = browser.cookies.to_a.map { |c| "#{c[:name]}=#{c[:value]}" }.join('; ')
+  browser.close
+
+  cookie_string
 end
 
 def export_to_csv(proposals)
