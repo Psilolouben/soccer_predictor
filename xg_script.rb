@@ -2,7 +2,6 @@ require 'nokogiri'
 require 'httparty'
 require 'watir'
 require 'selenium-webdriver'
-require 'webdrivers'
 require 'pry'
 require 'pry-nav'
 require 'capybara'
@@ -14,6 +13,7 @@ require 'net/http'
 require 'uri'
 require 'json'
 require 'csv'
+require 'puppeteer'
 
 
 # THRESHOLDS
@@ -45,20 +45,31 @@ NAMES_MAP = {
 
 NUMBER_OF_SIMULATIONS = 10000
 
-AVAILABLE_LEAGUES = ['LaLiga', 'Serie A', 'Bundesliga', 'Ligue 1',
-                     'Champions League', 'Europa League',
-                     'Championship', 'Premiership', 'Liga Portugal',
-                     'Premier League', 'Super Lig', 'Eredivisie',
-                     'UEFA Nations League A', 'UEFA Nations League B',
-                     'UEFA Nations League C', 'UEFA Nations League D',
-                     'League One', 'League Two' ]
+AVAILABLE_LEAGUES = [#'LaLiga', 'Serie A', 'Bundesliga', 'Ligue 1',
+                     'Champions League', 'Europa League',]
+                     #'Championship', 'Premiership', 'Liga Portugal',
+                     #'Premier League', 'Super Lig', 'Eredivisie',
+                     #'UEFA Nations League A', 'UEFA Nations League B',
+                     #'UEFA Nations League C', 'UEFA Nations League D',
+                     #'League One', 'League Two' ]
 
 def games(url)
-  @br = Watir::Browser.new
+  @br = Watir::Browser.new :chrome, options: {
+  args: [
+    '--disable-blink-features=AutomationControlled', # Disables WebDriver detection
+    '--disable-infobars', # Removes "Chrome is being controlled by automated software"
+    '--disable-extensions',
+    '--no-sandbox',
+    '--disable-dev-shm-usage',
+    '--start-maximized',
+    'user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+    ]
+  }
+  @br.driver.manage.timeouts.page_load = 600 # Increase to 5 minutes
   @br.goto(url)
 
   a = JSON.parse(@br.elements.first.text)['tournaments'].
-    #select { |x| AVAILABLE_LEAGUES.include?(x['tournamentName'])}.
+    select { |x| AVAILABLE_LEAGUES.include?(x['tournamentName'])}.
     map { |x| x['matches'].map do |g|
       next if DateTime.now > DateTime.parse(g['startTime']).utc
 
@@ -75,22 +86,40 @@ def games(url)
     end
   }.flatten.compact
   a
+rescue Watir::Wait::TimeoutError => e
+  puts "Encountered a timeout, retrying..."
+  retry
 ensure
   @br.quit
 end
 
 def starting_eleven(url)
-  @br = Watir::Browser.new
-  @br.goto(url)
-  @br.elements(class: 'player-name player-link cnt-oflow rc').wait_until(timeout: 60) do |p|
-    p.all?{ |x| !x.inner_html.empty? }
+  Puppeteer.launch(headless: false) do |browser|
+    page = browser.new_page
+    page.goto(url, wait_until: 'networkidle2')
+    puts 'Fetching starting eleven...'
+    player_selector = '.player-name.player-link.cnt-oflow.rc'
+    player_elements = page.query_selector_all(player_selector).map do |element|
+      element.evaluate('el => el.textContent')
+    end
+    a = {
+      home: player_elements.take(11),
+      away: player_elements.reverse.take(11)
+    }
+    a
   end
-
-  a = {
-    home: @br.elements(class: 'player-name player-link cnt-oflow rc').map(&:inner_html).take(11),
-    away: @br.elements(class: 'player-name player-link cnt-oflow rc').map(&:inner_html).reverse.take(11)
-  }
-  a
+rescue Selenium::WebDriver::Error::StaleElementReferenceError
+  @br.quit
+  puts "Encountered a stale element reference, retrying..."
+  retry
+rescue Net::ReadTimeout => e
+  @br.quit
+  puts "Encountered a timeout, retrying..."
+  retry
+rescue Watir::Wait::TimeoutError => e
+  @br.quit
+  puts "Encountered a timeout, retrying..."
+  retry
 ensure
   @br.quit
 end
@@ -105,6 +134,7 @@ def xgs_new(home_team, away_team, home_id, away_id, starting_eleven, competition
   away_url = "https://www.whoscored.com/StatisticsFeed/1/GetPlayerStatistics?category=xg-stats&subcategory=summary&statsAccumulationType=0&tournamentOptions=#{competition_id}&isCurrent=true&playerId=&teamIds=#{away_id}&sortBy=xg&sortAscending=false&field=Overall&isMinApp=false&page=&includeZeroValues=true&numberOfPlayersToPick=&incPens=true"
   home_team_url = "https://www.whoscored.com/Teams/#{home_id}/Show"
   away_team_url = "https://www.whoscored.com/Teams/#{away_id}/Show"
+  puts 'Fetching home xGs...'
   @br.goto(home_url)
   xgs_warning = false
   home_xgs = starting_eleven[:home].each_with_object({}) do |p, hsh|
@@ -115,6 +145,7 @@ def xgs_new(home_team, away_team, home_id, away_id, starting_eleven, competition
 
   home_cards_url = "https://www.whoscored.com/StatisticsFeed/1/GetPlayerStatistics?category=summary&subcategory=all&statsAccumulationType=0&isCurrent=true&playerId=&teamIds=#{home_id}&matchId=&stageId=&tournamentOptions=#{competition_id}&sortBy=Rating&sortAscending=&age=&ageComparisonType=&appearances=&appearancesComparisonType=&field=Overall&nationality=&positionOptions=&timeOfTheGameEnd=&timeOfTheGameStart=&isMinApp=false&page=&includeZeroValues=true&numberOfPlayersToPick=&incPens="
   @br.goto(home_cards_url)
+  puts 'Fetching home cards...'
 
   home_cards = starting_eleven[:home].each_with_object({}) do |p, hsh|
     yellow = JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['lastName'].include?(p) && x['tournamentId'] == competition_id}&.first.try(:[], 'yellowCard') || 0
@@ -124,6 +155,8 @@ def xgs_new(home_team, away_team, home_id, away_id, starting_eleven, competition
   end
 
   @br.goto(away_url)
+  puts 'Fetching away xGs...'
+
   away_xgs = starting_eleven[:away].each_with_object({}) do |p, hsh|
     hsh[p] = JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['lastName'].include?(p)}&.first.try(:[], 'xGPerNinety') || 0
   end
@@ -131,6 +164,8 @@ def xgs_new(home_team, away_team, home_id, away_id, starting_eleven, competition
   xgs_warning = true if away_xgs.count{ |_,v| v.to_i == 0} < 9
 
   away_cards_url = "https://www.whoscored.com/StatisticsFeed/1/GetPlayerStatistics?category=summary&subcategory=all&statsAccumulationType=0&isCurrent=true&playerId=&teamIds=#{away_id}&matchId=&stageId=&tournamentOptions=#{competition_id}&sortBy=Rating&sortAscending=&age=&ageComparisonType=&appearances=&appearancesComparisonType=&field=Overall&nationality=&positionOptions=&timeOfTheGameEnd=&timeOfTheGameStart=&isMinApp=false&page=&includeZeroValues=true&numberOfPlayersToPick=&incPens="
+  puts 'Fetching away cards...'
+
   @br.goto(away_cards_url)
 
   away_cards = starting_eleven[:away].each_with_object({}) do |p, hsh|
@@ -141,50 +176,106 @@ def xgs_new(home_team, away_team, home_id, away_id, starting_eleven, competition
   end
   sleep(1)
   begin
-    @br.goto(home_team_url)
-    if @br.button(text: "AGREE").exists?
-      @br.button(text: "AGREE").click
-    elsif @br.a(text: "AGREE").exists?
-      @br.a(text: "AGREE").click
-    end
-    sleep(1)
-    if @br.button(class: 'webpush-swal2-close').exists?
-      @br.button(class: 'webpush-swal2-close').click
-    end
-
-    sleep(1)
-    @br.a(text: "xG").wait_until(&:present?)
-    @br.a(text: "xG").click
-    sleep(1)
-    @br.a(text: "Against").wait_until(&:present?)
-    @br.a(text: "Against").click
-    sleep(1)
-    @br.wait_until(timeout: 60) { @br.div(id: 'statistics-team-table-xg').exists? }
-    @br.wait_until(timeout: 60) { @br.div(id: 'statistics-team-table-xg').trs.length > 1 }
-
-    sleep(1)
     home_team_xga = nil
-    @br.div(id: 'statistics-team-table-xg').divs.first.tables.first.tbodys.first.trs.each do |tr|
-      ctournament_id = tr.first.a.href.split('Tournaments/').last.split('/').first.to_i
-      next unless ctournament_id == competition_id
-
-      home_team_xga = tr.tds[2].text.to_f / tr.tds[1].text.to_f
-    end
-    sleep(1)
-    @br.goto(away_team_url)
-    @br.a(text: "xG").click
-    @br.a(text: "Against").click
-    @br.wait_until(timeout: 60) { @br.div(id: 'statistics-team-table-xg').exists? }
-    @br.wait_until(timeout: 60) { @br.div(id: 'statistics-team-table-xg').trs.length > 1 }
-
-    sleep(1)
     away_team_xga = nil
+    puts 'Fetching home defense xG...'
+    Puppeteer.launch(headless: false) do |browser|
+      page = browser.new_page
 
-    @br.div(id: 'statistics-team-table-xg').divs.first.tables.first.tbodys.first.trs.each do |tr|
-      ctournament_id = tr.first.a.href.split('Tournaments/').last.split('/').first.to_i
-      next unless ctournament_id == competition_id
+      # Navigate to the home team URL
+      page.goto(home_team_url, wait_until: 'networkidle2')
 
-      away_team_xga = tr.tds[2].text.to_f / tr.tds[1].text.to_f
+      # Handle the "AGREE" button or link
+      page.query_selector_all('button').find { |btn| btn.evaluate('el => el.textContent.includes("AGREE")') }.click
+
+      # Wait briefly
+      sleep(1)
+
+      # Handle the "Close" button for web push notifications
+      if page.query_selector('button.webpush-swal2-close')
+        page.query_selector('button.webpush-swal2-close').click
+      end
+
+      # Wait briefly
+      sleep(1)
+
+      # Click on the "xG" link
+      page.query_selector('a[href="#top-team-stats-xg"]').click
+
+      # Wait briefly
+      sleep(1)
+      player_selector = '.option '
+      against_element = page.query_selector_all(player_selector).select do |element|
+        element.evaluate('el => el.textContent') == 'Against'
+      end.first
+
+      against_element.click
+
+      # Extract and calculate `home_team_xga`
+      home_team_xga = nil
+      sleep(2)
+      table_rows = page.query_selector_all('#statistics-team-table-xg tr').select do |row|
+        !row.evaluate('row => row.querySelector("th")')
+      end
+      table_rows.each do |tr|
+        tournament_id = tr.evaluate('row => row.querySelector("a").href.split("Tournaments/").pop().split("/")[0]', nil).to_i
+        next unless tournament_id == competition_id
+
+        # Calculate xGA value
+        goals_conceded = tr.evaluate('row => parseFloat(row.cells[2].textContent)', nil).to_f
+        matches_played = tr.evaluate('row => parseFloat(row.cells[1].textContent)', nil).to_f
+        home_team_xga = goals_conceded / matches_played
+      end
+    end
+
+    sleep(1)
+    puts 'Fetching away defense xG...'
+    Puppeteer.launch(headless: false) do |browser|
+      page = browser.new_page
+
+      # Navigate to the home team URL
+      page.goto(away_team_url, wait_until: 'networkidle2')
+
+      # Handle the "AGREE" button or link
+      page.query_selector_all('button').find { |btn| btn.evaluate('el => el.textContent.includes("AGREE")') }.click
+
+      # Wait briefly
+      sleep(1)
+
+      # Handle the "Close" button for web push notifications
+      if page.query_selector('button.webpush-swal2-close')
+        page.query_selector('button.webpush-swal2-close').click
+      end
+
+      # Wait briefly
+      sleep(1)
+
+      # Click on the "xG" link
+      page.query_selector('a[href="#top-team-stats-xg"]').click
+
+      # Wait briefly
+      sleep(1)
+      player_selector = '.option '
+      against_element = page.query_selector_all(player_selector).select do |element|
+        element.evaluate('el => el.textContent') == 'Against'
+      end.first
+
+      against_element.click
+
+      # Extract and calculate `away_team_xga`
+      sleep(2)
+      table_rows = page.query_selector_all('#statistics-team-table-xg tr').select do |row|
+        !row.evaluate('row => row.querySelector("th")')
+      end
+      table_rows.each do |tr|
+        tournament_id = tr.evaluate('row => row.querySelector("a").href.split("Tournaments/").pop().split("/")[0]', nil).to_i
+        next unless tournament_id == competition_id
+
+        # Calculate xGA value
+        goals_conceded = tr.evaluate('row => parseFloat(row.cells[2].textContent)', nil).to_f
+        matches_played = tr.evaluate('row => parseFloat(row.cells[1].textContent)', nil).to_f
+        away_team_xga = goals_conceded / matches_played
+      end
     end
   rescue Selenium::WebDriver::Error::StaleElementReferenceError
     puts "Encountered a stale element reference, retrying..."
@@ -196,7 +287,6 @@ def xgs_new(home_team, away_team, home_id, away_id, starting_eleven, competition
     puts "Encountered a timeout, retrying..."
     retry
   end
-
   stats = {
     home_xgs: home_xgs,
     away_xgs: away_xgs,
@@ -357,7 +447,7 @@ begin
   if ARGV.count < 3
     ids = read_index_file
 
-    date_str = Date.today.strftime("%Y%m%d")
+    date_str = Date.tomorrow.strftime("%Y%m%d")
     matches = games("https://www.whoscored.com/livescores/data?d=#{date_str}&isSummary=true")
     matches.each do |m|
       next if ids.include?(m[:id])
@@ -378,7 +468,7 @@ begin
 
       write_to_index_file(m[:id])
     rescue => e
-      #binding.pry
+      binding.pry
       next
     end
 
