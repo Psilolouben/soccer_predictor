@@ -376,20 +376,25 @@ def simulate_match(home_team, away_team, stats)
   puts "Simulating games..."
 
   NUMBER_OF_SIMULATIONS.times do
-    home_xg_stats = stats[:home_xgs].transform_values { |x| Distribution::Poisson.rng(x) }.select{|_, v| v > 0}
-    away_xg_stats = stats[:away_xgs].transform_values { |x| Distribution::Poisson.rng(x) }.select{|_, v| v > 0}
+    home_xga = Distribution::Poisson.rng(stats[:home_xga])
+    away_xga = Distribution::Poisson.rng(stats[:away_xga])
+    binding.pry unless stats[:xgs_warning]
+
+    home_team_xg = stats[:home_xgs].values.sum
+    away_team_xg = stats[:away_xgs].values.sum
+    home_goals = Distribution::Poisson.rng(home_team_xg)
+    away_goals = Distribution::Poisson.rng(away_team_xg)
+
+    home = (home_goals * Math.log(1 + home_team_xg) / Math.log(1 + (home_team_xg + away_xga))).round
+    away = (away_goals * Math.log(1 + away_team_xg) / Math.log(1 + (away_team_xg + home_xga))).round
+
     #home_assist_stats = stats[:home_xas].transform_values { |x| Distribution::Poisson.rng(x) }.select{|_, v| v > 0}
     #away_assist_stats = stats[:away_xas].transform_values { |x| Distribution::Poisson.rng(x) }.select{|_, v| v > 0}
     home_yellow_cards = stats[:home_cards].transform_values { |x| Distribution::Poisson.rng(x) }.select{|_, v| v > 0}
     away_yellow_cards = stats[:away_cards].transform_values { |x| Distribution::Poisson.rng(x) }.select{|_, v| v > 0}
 
-    home_xga = Distribution::Poisson.rng(stats[:home_xga])
-    away_xga = Distribution::Poisson.rng(stats[:away_xga])
-    home = ([home_xg_stats.sum{ |_, v| v }, away_xga].min + ((home_xg_stats.sum{ |_, v| v } - away_xga).abs / 3.333)).round
-    away = ([away_xg_stats.sum{ |_, v| v }, home_xga].min + ((away_xg_stats.sum{ |_, v| v } - home_xga).abs / 3.333)).round
-
-    home_scorers << home_xg_stats.each_with_object([]) { |k, arr| arr << [k[0]] * k[1] }.flatten.sample(home)
-    away_scorers << away_xg_stats.each_with_object([]) { |k, arr| arr << [k[0]] * k[1] }.flatten.sample(away)
+    #home_scorers << home_xg_stats.each_with_object([]) { |k, arr| arr << [k[0]] * k[1] }.flatten.sample(home)
+    #away_scorers << away_xg_stats.each_with_object([]) { |k, arr| arr << [k[0]] * k[1] }.flatten.sample(away)
     #home_assists << home_assist_stats.keys
     #away_assists << away_assist_stats.keys
 
