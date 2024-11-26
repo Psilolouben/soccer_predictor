@@ -378,7 +378,6 @@ def simulate_match(home_team, away_team, stats)
   NUMBER_OF_SIMULATIONS.times do
     home_xga = Distribution::Poisson.rng(stats[:home_xga])
     away_xga = Distribution::Poisson.rng(stats[:away_xga])
-    binding.pry unless stats[:xgs_warning]
 
     home_team_xg = stats[:home_xgs].values.sum
     away_team_xg = stats[:away_xgs].values.sum
