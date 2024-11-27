@@ -45,13 +45,13 @@ NAMES_MAP = {
 
 NUMBER_OF_SIMULATIONS = 10000
 
-AVAILABLE_LEAGUES = [#'LaLiga', 'Serie A', 'Bundesliga', 'Ligue 1',
-                     'Champions League', 'Europa League',]
-                     #'Championship', 'Premiership', 'Liga Portugal',
-                     #'Premier League', 'Super Lig', 'Eredivisie',
-                     #'UEFA Nations League A', 'UEFA Nations League B',
-                     #'UEFA Nations League C', 'UEFA Nations League D',
-                     #'League One', 'League Two' ]
+AVAILABLE_LEAGUES = ['LaLiga', 'Serie A', 'Bundesliga', 'Ligue 1',
+                     'Champions League', 'Europa League',
+                     'Championship', 'Premiership', 'Liga Portugal',
+                     'Premier League', 'Super Lig', 'Eredivisie',
+                     'UEFA Nations League A', 'UEFA Nations League B',
+                     'UEFA Nations League C', 'UEFA Nations League D',
+                     'League One', 'League Two' ]
 
 def games(url)
   @br = Watir::Browser.new :chrome, options: {
@@ -138,9 +138,8 @@ def xgs_new(home_team, away_team, home_id, away_id, starting_eleven, competition
   @br.goto(home_url)
   xgs_warning = false
   home_xgs = starting_eleven[:home].each_with_object({}) do |p, hsh|
-    hsh[p] = JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['lastName'].include?(p) && x['tournamentId'] == competition_id}&.first.try(:[], 'xGPerNinety') || 0
+    hsh[p] = JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['name'].include?(p) && x['tournamentId'] == competition_id}&.first.try(:[], 'xGPerNinety') || 0
   end
-
   xgs_warning = true if home_xgs.count{ |_,v| v == 0} > 2
 
   home_cards_url = "https://www.whoscored.com/StatisticsFeed/1/GetPlayerStatistics?category=summary&subcategory=all&statsAccumulationType=0&isCurrent=true&playerId=&teamIds=#{home_id}&matchId=&stageId=&tournamentOptions=#{competition_id}&sortBy=Rating&sortAscending=&age=&ageComparisonType=&appearances=&appearancesComparisonType=&field=Overall&nationality=&positionOptions=&timeOfTheGameEnd=&timeOfTheGameStart=&isMinApp=false&page=&includeZeroValues=true&numberOfPlayersToPick=&incPens="
@@ -148,9 +147,9 @@ def xgs_new(home_team, away_team, home_id, away_id, starting_eleven, competition
   puts 'Fetching home cards...'
 
   home_cards = starting_eleven[:home].each_with_object({}) do |p, hsh|
-    yellow = JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['lastName'].include?(p) && x['tournamentId'] == competition_id}&.first.try(:[], 'yellowCard') || 0
-    red = JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['lastName'].include?(p) && x['tournamentId'] == competition_id}&.first.try(:[], 'redCard') || 0
-    apps = JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['lastName'].include?(p) && x['tournamentId'] == competition_id}&.first.try(:[], 'apps') || 0
+    yellow = JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['name'].include?(p) && x['tournamentId'] == competition_id}&.first.try(:[], 'yellowCard') || 0
+    red = JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['name'].include?(p) && x['tournamentId'] == competition_id}&.first.try(:[], 'redCard') || 0
+    apps = JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['name'].include?(p) && x['tournamentId'] == competition_id}&.first.try(:[], 'apps') || 0
     hsh[p] = apps.zero? ? 0 : ((yellow + red) / apps.to_f)
   end
 
@@ -158,9 +157,8 @@ def xgs_new(home_team, away_team, home_id, away_id, starting_eleven, competition
   puts 'Fetching away xGs...'
 
   away_xgs = starting_eleven[:away].each_with_object({}) do |p, hsh|
-    hsh[p] = JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['lastName'].include?(p)}&.first.try(:[], 'xGPerNinety') || 0
+    hsh[p] = JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['name'].include?(p)}&.first.try(:[], 'xGPerNinety') || 0
   end
-
   xgs_warning = true if away_xgs.count{ |_,v| v == 0} > 2
 
   away_cards_url = "https://www.whoscored.com/StatisticsFeed/1/GetPlayerStatistics?category=summary&subcategory=all&statsAccumulationType=0&isCurrent=true&playerId=&teamIds=#{away_id}&matchId=&stageId=&tournamentOptions=#{competition_id}&sortBy=Rating&sortAscending=&age=&ageComparisonType=&appearances=&appearancesComparisonType=&field=Overall&nationality=&positionOptions=&timeOfTheGameEnd=&timeOfTheGameStart=&isMinApp=false&page=&includeZeroValues=true&numberOfPlayersToPick=&incPens="
@@ -447,7 +445,7 @@ begin
   if ARGV.count < 3
     ids = read_index_file
 
-    date_str = Date.tomorrow.strftime("%Y%m%d")
+    date_str = Date.today.strftime("%Y%m%d")
     matches = games("https://www.whoscored.com/livescores/data?d=#{date_str}&isSummary=true")
     matches.each do |m|
       next if ids.include?(m[:id])
