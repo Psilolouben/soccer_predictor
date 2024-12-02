@@ -21,8 +21,8 @@ THRESHOLDS = {
   UNDER_OVER_HALF_THRESHOLD: { index: [-1], value: 80 },
   SINGLE_THRESHOLD: { index: [2,4], value: 60 },
   DRAW_THRESHOLD: { index: [3], value: 35 },
-  DOUBLE_THRESHOLD: { index: [5, 6, 7], value: 75 },
-  UNDER_OVER_THRESHOLD: { index: [8, 9, 10, 11, 12, 13], value: 80 },
+  DOUBLE_THRESHOLD: { index: [5, 6, 7], value: 70 },
+  UNDER_OVER_THRESHOLD: { index: [8, 9, 10, 11, 12, 13], value: 75 },
   GG_THRESHOLD: { index: [14], value: 80 },
   CORNER_THRESHOLD: { index: [-1], value: 80 },
   CARDS_THRESHOLD: { index: [16], value: 80 },
@@ -102,6 +102,8 @@ def starting_eleven(url)
     player_elements = page.query_selector_all(player_selector).map do |element|
       element.evaluate('el => el.textContent')
     end
+
+    return if player_elements.empty?
     a = {
       home: player_elements.take(11),
       away: player_elements.reverse.take(11)
