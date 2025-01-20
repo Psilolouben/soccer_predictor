@@ -48,10 +48,10 @@ NUMBER_OF_SIMULATIONS = 10000
 AVAILABLE_LEAGUES = ['LaLiga', 'Serie A', 'Bundesliga', 'Ligue 1',
                      'Champions League', 'Europa League',
                      'Championship', 'Premiership', 'Liga Portugal',
-                     'Premier League', 'Super Lig', 'Eredivisie',
+                     'Premier League', 'Eredivisie',
                      'UEFA Nations League A', 'UEFA Nations League B',
                      'UEFA Nations League C', 'UEFA Nations League D',
-                     'League One', 'League Two' ]
+                    ]
 
 def games(url)
   @br = Watir::Browser.new :chrome, options: {
@@ -214,11 +214,13 @@ def xgs_new(home_team, away_team, home_id, away_id, starting_eleven, competition
       # Extract and calculate `home_team_xga`
       home_team_xga = nil
       sleep(2)
+
       table_rows = page.query_selector_all('#statistics-team-table-xg tr').select do |row|
         !row.evaluate('row => row.querySelector("th")')
       end
       table_rows.each do |tr|
-        tournament_id = tr.evaluate('row => row.querySelector("a").href.split("Tournaments/").pop().split("/")[0]', nil).to_i
+        tournament_id = tr.query_selector_all('td').first.query_selector('a').evaluate('node => node.href').split('tournaments')[1][1..].split('/')[0].to_i
+        #tournament_id = tr.evaluate('row => row.querySelector("a").href.split("Tournaments/").pop().split("/")[0]', nil).to_i
         next unless tournament_id == competition_id
 
         # Calculate xGA value
@@ -268,7 +270,7 @@ def xgs_new(home_team, away_team, home_id, away_id, starting_eleven, competition
         !row.evaluate('row => row.querySelector("th")')
       end
       table_rows.each do |tr|
-        tournament_id = tr.evaluate('row => row.querySelector("a").href.split("Tournaments/").pop().split("/")[0]', nil).to_i
+        tournament_id = tr.query_selector_all('td').first.query_selector('a').evaluate('node => node.href').split('tournaments')[1][1..].split('/')[0].to_i
         next unless tournament_id == competition_id
 
         # Calculate xGA value
@@ -382,17 +384,14 @@ def simulate_match(home_team, away_team, stats)
     #away_assist_stats = stats[:away_xas].transform_values { |x| Distribution::Poisson.rng(x) }.select{|_, v| v > 0}
     home_yellow_cards = stats[:home_cards].transform_values { |x| Distribution::Poisson.rng(x) }.select{|_, v| v > 0}
     away_yellow_cards = stats[:away_cards].transform_values { |x| Distribution::Poisson.rng(x) }.select{|_, v| v > 0}
-
     home_xga = Distribution::Poisson.rng(stats[:home_xga])
     away_xga = Distribution::Poisson.rng(stats[:away_xga])
     home = ([home_xg_stats.sum{ |_, v| v }, away_xga].min + ((home_xg_stats.sum{ |_, v| v } - away_xga).abs / 3.333)).round
     away = ([away_xg_stats.sum{ |_, v| v }, home_xga].min + ((away_xg_stats.sum{ |_, v| v } - home_xga).abs / 3.333)).round
-
     home_scorers << home_xg_stats.each_with_object([]) { |k, arr| arr << [k[0]] * k[1] }.flatten.sample(home)
     away_scorers << away_xg_stats.each_with_object([]) { |k, arr| arr << [k[0]] * k[1] }.flatten.sample(away)
     #home_assists << home_assist_stats.keys
     #away_assists << away_assist_stats.keys
-
     scores << "#{home}-#{away}"
 
     if home == away
