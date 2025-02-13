@@ -186,7 +186,7 @@ def xgs_new(home_team, away_team, home_id, away_id, starting_eleven, competition
       page.goto(home_team_url, wait_until: 'networkidle2')
 
       # Handle the "AGREE" button or link
-      page.query_selector_all('button').find { |btn| btn.evaluate('el => el.textContent.includes("AGREE")') }.click
+      page.query_selector_all('button').find { |btn| btn.evaluate('el => el.textContent.includes("AGREE")') }&.click
 
       # Wait briefly
       sleep(1)
@@ -239,7 +239,7 @@ def xgs_new(home_team, away_team, home_id, away_id, starting_eleven, competition
       page.goto(away_team_url, wait_until: 'networkidle2')
 
       # Handle the "AGREE" button or link
-      page.query_selector_all('button').find { |btn| btn.evaluate('el => el.textContent.includes("AGREE")') }.click
+      page.query_selector_all('button').find { |btn| btn.evaluate('el => el.textContent.includes("AGREE")') }&.click
 
       # Wait briefly
       sleep(1)
