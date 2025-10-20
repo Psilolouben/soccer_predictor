@@ -69,7 +69,7 @@ def games(url)
   @br.goto(url)
 
   a = JSON.parse(@br.elements.first.text)['tournaments'].
-    #select { |x| AVAILABLE_LEAGUES.include?(x['tournamentName'])}.
+    select { |x| AVAILABLE_LEAGUES.include?(x['tournamentName'])}.
     map { |x| x['matches'].map do |g|
       next if DateTime.now > DateTime.parse(g['startTime']).utc
 
@@ -80,6 +80,7 @@ def games(url)
         away: g['awayTeamName'],
         away_id: g['awayTeamId'],
         url: "https://www.whoscored.com/Matches/#{g['id']}/Preview/",
+        lineup_url: "https://www.whoscored.com/livescores/#{g['id']}/lineups",
         tournament_id: x['tournamentId'],
         tournament_name: x['tournamentName'],
         bet1: g.dig('bets', 'home', 'offers')&.first{|m| m['bettingProvider'] == 'B3'}&.dig('oddsDecimal')&.to_f,
@@ -97,22 +98,18 @@ ensure
 end
 
 def starting_eleven(url)
-  Puppeteer.launch(headless: false) do |browser|
-    page = browser.new_page
-    page.goto(url, wait_until: 'networkidle2')
-    puts 'Fetching starting eleven...'
-    player_selector = '.player-name.player-link.cnt-oflow.rc'
-    player_elements = page.query_selector_all(player_selector).map do |element|
-      element.evaluate('el => el.textContent')
-    end
+  @br = Watir::Browser.new
+  @br.goto(url)
 
-    return if player_elements.empty?
-    a = {
-      home: player_elements.take(11),
-      away: player_elements.reverse.take(11)
-    }
-    a
-  end
+  a =  {
+    home: JSON.parse(@br.elements.first.text).reject{|x| x['position'] == "Sub"}.select{|x| x['field']['displayName'] == 'Home'}.map{|x| x['name']},
+    away: JSON.parse(@br.elements.first.text).reject{|x| x['position'] == "Sub"}.select{|x| x['field']['displayName'] == 'Away'}.map{|x| x['name']}
+  }
+
+  return a
+rescue JSON::ParserError
+  @br.quit
+  return nil
 rescue Selenium::WebDriver::Error::StaleElementReferenceError
   @br.quit
   puts "Encountered a stale element reference, retrying..."
@@ -125,6 +122,45 @@ rescue Watir::Wait::TimeoutError => e
   @br.quit
   puts "Encountered a timeout, retrying..."
   retry
+rescue e
+  return nil
+ensure
+  @br.quit
+end
+
+def predicted_eleven(url)
+  Puppeteer.launch(headless: false) do |browser|
+    page = browser.new_page
+    page.goto(url, wait_until: 'networkidle2')
+    puts 'Fetching starting eleven...'
+    player_selector = '.player-name.player-link.cnt-oflow.rc'
+    player_elements = page.query_selector_all(player_selector).map do |element|
+      element.evaluate('el => el.textContent')
+    end
+
+    return if player_elements.empty?
+
+    a = {
+      home: player_elements.take(11),
+      away: player_elements.reverse.take(11)
+    }
+    a
+  end
+rescue Selenium::WebDriver::Error::StaleElementReferenceError
+  @br.quit
+  puts "Encountered a stale element reference, retrying..."
+  return nil
+rescue Net::ReadTimeout => e
+  @br.quit
+  puts "Encountered a timeout, retrying..."
+  return nil
+rescue Watir::Wait::TimeoutError => e
+  @br.quit
+  puts "Encountered a timeout, retrying..."
+  return nil
+rescue e
+  binding.pry
+  return nil
 ensure
   @br.quit
 end
@@ -140,6 +176,7 @@ def xgs_new(home_team, away_team, home_id, away_id, starting_eleven, competition
   home_team_url = "https://www.whoscored.com/Teams/#{home_id}/Show"
   away_team_url = "https://www.whoscored.com/Teams/#{away_id}/Show"
   puts 'Fetching home xGs...'
+
   @br.goto(home_url)
   xgs_warning = false
   home_xgs = starting_eleven[:home].each_with_object({}) do |p, hsh|
@@ -196,7 +233,7 @@ def xgs_new(home_team, away_team, home_id, away_id, starting_eleven, competition
   }
   stats
 rescue => e
- #binding.pry
+  #binding.pry
 ensure
   @br.quit
   return stats
@@ -231,6 +268,7 @@ end
 def print_proposals
   games = import_from_csv
   proposals = Hash.new {|hsh, key| hsh[key] = [] }
+
   games.each do |g|
     next if g['Missing XGS'] == 'true'
 
@@ -352,32 +390,36 @@ rescue => e
 end
 
 begin
+  Selenium::WebDriver.logger.level = :error
+
   results = []
   if ARGV.count < 3
     ids = read_index_file
 
-    date_str = Date.tomorrow.strftime("%Y%m%d")
+    date_str = Date.today.strftime("%Y%m%d")
     matches = games("https://www.whoscored.com/livescores/data?d=#{date_str}&isSummary=true")
+
     matches.each do |m|
       next if ids.include?(m[:id])
       next unless m[:url]
 
       puts "#{NAMES_MAP[m[:home]] || m[:home]} - #{NAMES_MAP[m[:away]] || m[:away]}"
+
       match_xgs = xgs_new(
         (NAMES_MAP[m[:home]] || m[:home]).split(' ').join('_'),
         (NAMES_MAP[m[:away]] || m[:away]).split(' ').join('_'),
         m[:home_id],
         m[:away_id],
-        ARGV[2] || starting_eleven( m[:url]),
+        ARGV[2] || predicted_eleven( m[:url]) || starting_eleven(m[:lineup_url]),
         m[:tournament_id]
       )
+      #binding.pry
       next unless match_xgs
 
       results << simulate_match(NAMES_MAP[m[:home]] || m[:home], NAMES_MAP[m[:away]] || m[:away], match_xgs)
 
       write_to_index_file(m[:id])
     rescue => e
-      binding.pry
       next
     end
 
