@@ -21,8 +21,8 @@ THRESHOLDS = {
   UNDER_OVER_HALF_THRESHOLD: { index: [-1], value: 80 },
   SINGLE_THRESHOLD: { index: [2,4], value: 60 },
   DRAW_THRESHOLD: { index: [3], value: 35 },
-  DOUBLE_THRESHOLD: { index: [5, 6, 7], value: 70 },
-  UNDER_OVER_THRESHOLD: { index: [8, 9, 10, 11, 12, 13], value: 75 },
+  DOUBLE_THRESHOLD: { index: [5, 6, 7], value: 75 },
+  UNDER_OVER_THRESHOLD: { index: [8, 9, 10, 11, 12, 13], value: 80 },
   GG_THRESHOLD: { index: [14], value: 80 },
   CORNER_THRESHOLD: { index: [-1], value: 80 },
   CARDS_THRESHOLD: { index: [16], value: 80 },
@@ -45,13 +45,30 @@ NAMES_MAP = {
 
 NUMBER_OF_SIMULATIONS = 10000
 
-AVAILABLE_LEAGUES = ['LaLiga', 'Serie A', 'Bundesliga', 'Ligue 1',
-                     'Champions League', 'Europa League',
-                     'Premiership', 'Liga Portugal',
-                     'Premier League', 'Eredivisie',
-                     'UEFA Nations League A', 'UEFA Nations League B',
-                     'UEFA Nations League C', 'UEFA Nations League D',
-                    ]
+#AVAILABLE_LEAGUES = ['LaLiga', 'Serie A', 'Bundesliga', 'Ligue 1',
+#                     'Champions League', 'Europa League',
+#                     'Premiership', 'Liga Portugal',
+#                     'Premier League', 'Eredivisie',
+#                     'Conference League',
+#                     'UEFA Nations League A', 'UEFA Nations League B',
+#                     'UEFA Nations League C', 'UEFA Nations League D',
+#                    ]
+
+AVAILABLE_LEAGUES = {
+    4 => 'LaLiga',
+    5 => 'Serie A',
+    3 => 'Bundesliga',
+    22 => 'Ligue 1',
+    12 => 'Champions League',
+    30 => 'Europa League',
+    20 => 'Premiership',
+    21 => 'Liga Portugal',
+    2 => 'Premier League',
+    7 => 'Championship',
+    13 => 'Eredivisie',
+    715 => 'Conference League',
+    65 => 'Greek Super League'
+}
 
 def games(url)
   @br = Watir::Browser.new :chrome, options: {
@@ -105,8 +122,9 @@ def starting_eleven(url)
     home: JSON.parse(@br.elements.first.text).reject{|x| x['position'] == "Sub"}.select{|x| x['field']['displayName'] == 'Home'}.map{|x| x['name']},
     away: JSON.parse(@br.elements.first.text).reject{|x| x['position'] == "Sub"}.select{|x| x['field']['displayName'] == 'Away'}.map{|x| x['name']}
   }
+  return nil if a[:home].count < 11 || a[:away].count < 11
 
-  return a
+  a
 rescue JSON::ParserError
   @br.quit
   return nil
@@ -187,6 +205,7 @@ def xgs_new(home_team, away_team, home_id, away_id, starting_eleven, competition
     hsh[p][1] = apps == 0 ? 0 : shots / apps.to_f
   end
   xgs_warning = true if home_xgs.count{ |_,v| v == 0} > 2
+  return if home_xgs.values.all?{|x| x == [0,0]}
 
   home_cards_url = "https://www.whoscored.com/StatisticsFeed/1/GetPlayerStatistics?category=summary&subcategory=all&statsAccumulationType=0&isCurrent=true&playerId=&teamIds=#{home_id}&matchId=&stageId=&tournamentOptions=#{competition_id}&sortBy=Rating&sortAscending=&age=&ageComparisonType=&appearances=&appearancesComparisonType=&field=Overall&nationality=&positionOptions=&timeOfTheGameEnd=&timeOfTheGameStart=&isMinApp=false&page=&includeZeroValues=true&numberOfPlayersToPick=&incPens="
   @br.goto(home_cards_url)
@@ -210,6 +229,7 @@ def xgs_new(home_team, away_team, home_id, away_id, starting_eleven, competition
     hsh[p][1] = apps == 0 ? 0 : shots / apps.to_f
   end
   xgs_warning = true if away_xgs.count{ |_,v| v == 0} > 2
+  return if home_xgs.values.all?{|x| x == [0,0]}
 
   away_cards_url = "https://www.whoscored.com/StatisticsFeed/1/GetPlayerStatistics?category=summary&subcategory=all&statsAccumulationType=0&isCurrent=true&playerId=&teamIds=#{away_id}&matchId=&stageId=&tournamentOptions=#{competition_id}&sortBy=Rating&sortAscending=&age=&ageComparisonType=&appearances=&appearancesComparisonType=&field=Overall&nationality=&positionOptions=&timeOfTheGameEnd=&timeOfTheGameStart=&isMinApp=false&page=&includeZeroValues=true&numberOfPlayersToPick=&incPens="
   puts 'Fetching away cards...'
@@ -397,7 +417,7 @@ begin
     ids = read_index_file
 
     date_str = Date.today.strftime("%Y%m%d")
-    matches = games("https://www.whoscored.com/livescores/data?d=#{date_str}&isSummary=true")
+    matches = games("https://www.whoscored.com/livescores/data?d=#{date_str}&isSummary=false")
 
     matches.each do |m|
       next if ids.include?(m[:id])
@@ -410,7 +430,7 @@ begin
         (NAMES_MAP[m[:away]] || m[:away]).split(' ').join('_'),
         m[:home_id],
         m[:away_id],
-        ARGV[2] || predicted_eleven( m[:url]) || starting_eleven(m[:lineup_url]),
+        ARGV[2] || starting_eleven(m[:lineup_url]) || predicted_eleven( m[:url]),
         m[:tournament_id]
       )
       #binding.pry
