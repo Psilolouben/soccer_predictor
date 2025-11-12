@@ -67,7 +67,11 @@ AVAILABLE_LEAGUES = {
     7 => 'Championship',
     13 => 'Eredivisie',
     715 => 'Conference League',
-    65 => 'Greek Super League'
+    65 => 'Greek Super League',
+    721 => 'World Cup Qualification UEFA',
+    719 => 'World Cup Qualification CONMEBOL',
+    717 => 'World Cup Qualification CONCACAF',
+    95 => 'Brazil Serie A'
 }
 
 def games(url)
@@ -176,8 +180,7 @@ rescue Watir::Wait::TimeoutError => e
   @br.quit
   puts "Encountered a timeout, retrying..."
   return nil
-rescue e
-  binding.pry
+rescue => e
   return nil
 ensure
   @br.quit
