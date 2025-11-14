@@ -13,7 +13,7 @@ require 'net/http'
 require 'uri'
 require 'json'
 require 'csv'
-require 'puppeteer'
+require 'puppeteer-ruby'
 
 
 # THRESHOLDS
@@ -409,7 +409,7 @@ def simulate_match(home_team, away_team, stats)
 
   return res.merge(res.except(:home_team, :away_team, :missing_xgs, :home_scorers, :away_scorers).transform_values{ |v| v / (NUMBER_OF_SIMULATIONS / 100.0) })
 rescue => e
-  binding.pry
+  #binding.pry
 end
 
 begin
