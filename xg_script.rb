@@ -3,7 +3,7 @@ require 'httparty'
 require 'watir'
 require 'selenium-webdriver'
 require 'pry'
-require 'pry-nav'
+require 'pry-byebug'
 require 'capybara'
 require 'active_support'
 require 'active_support/time'
@@ -45,15 +45,6 @@ NAMES_MAP = {
 
 NUMBER_OF_SIMULATIONS = 10000
 
-#AVAILABLE_LEAGUES = ['LaLiga', 'Serie A', 'Bundesliga', 'Ligue 1',
-#                     'Champions League', 'Europa League',
-#                     'Premiership', 'Liga Portugal',
-#                     'Premier League', 'Eredivisie',
-#                     'Conference League',
-#                     'UEFA Nations League A', 'UEFA Nations League B',
-#                     'UEFA Nations League C', 'UEFA Nations League D',
-#                    ]
-
 AVAILABLE_LEAGUES = {
     4 => 'LaLiga',
     5 => 'Serie A',
@@ -71,7 +62,8 @@ AVAILABLE_LEAGUES = {
     721 => 'World Cup Qualification UEFA',
     719 => 'World Cup Qualification CONMEBOL',
     717 => 'World Cup Qualification CONCACAF',
-    95 => 'Brazil Serie A'
+    95 => 'Brazil Serie A',
+    739 => 'Womens Super League'
 }
 
 def games(url)
@@ -90,7 +82,7 @@ def games(url)
   @br.goto(url)
 
   a = JSON.parse(@br.elements.first.text)['tournaments'].
-    select { |x| AVAILABLE_LEAGUES.include?(x['tournamentName'])}.
+    select { |x| AVAILABLE_LEAGUES.keys.include?(x['tournamentId'])}.
     map { |x| x['matches'].map do |g|
       next if DateTime.now > DateTime.parse(g['startTime']).utc
 
@@ -144,7 +136,7 @@ rescue Watir::Wait::TimeoutError => e
   @br.quit
   puts "Encountered a timeout, retrying..."
   retry
-rescue e
+rescue => e
   return nil
 ensure
   @br.quit
