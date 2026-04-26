@@ -10,6 +10,7 @@ require 'active_support/time'
 require 'distribution'
 require 'mechanize'
 require 'net/http'
+require 'net/smtp'
 require 'uri'
 require 'json'
 require 'csv'
@@ -304,13 +305,12 @@ def import_from_csv
   CSV.read("bet_proposals.csv", headers: true, col_sep: ';').map(&:to_h)
 end
 
-def print_proposals
+def build_proposals
   games = import_from_csv
   skip_cols = ['Missing XGS', 'Home', 'Away', 'Score', 'Bet1', 'BetX', 'Bet2', 'Edge1', 'EdgeX', 'Edge2', 'Kelly1', 'KellyX', 'Kelly2']
   edge_col  = { '1' => 'Edge1',  'X' => 'EdgeX',  '2' => 'Edge2'  }
   kelly_col = { '1' => 'Kelly1', 'X' => 'KellyX', '2' => 'Kelly2' }
 
-  # keep only the last simulation result per match
   by_match = {}
   games.each { |g| by_match["#{g['Home']}-#{g['Away']}"] = g }
 
@@ -329,9 +329,10 @@ def print_proposals
     { g: g, bets: bets }
   end
 
-  return if rows.empty?
+  return '' if rows.empty?
 
   sep = '─' * 56
+  lines = []
   rows.each do |row|
     g, bets = row[:g], row[:bets]
 
@@ -341,24 +342,57 @@ def print_proposals
     odds = [g['Bet1'].to_f, g['BetX'].to_f, g['Bet2'].to_f]
     odds_str = odds.map { |o| o > 0 ? format('%.2f', o) : '-' }.join(' / ')
 
-    puts sep
+    lines << sep
     header = "#{g['Home']} vs #{g['Away']}"
-    puts "#{header.ljust(38)}  #{score_str}"
-    puts "  Odds: #{odds_str}"
+    lines << "#{header.ljust(38)}  #{score_str}"
+    lines << "  Odds: #{odds_str}"
     bets.each do |bet|
       ek = edge_col[bet[:name]]
       kk = kelly_col[bet[:name]]
-      edge  = ek ? g[ek].to_f  : nil
+      edge  = ek ? g[ek].to_f : nil
       kelly = kk ? g[kk].to_f : nil
 
       line = format('  %-16s %5.1f%%', bet[:name], bet[:prob])
-      if edge && edge > 0
-        line += format('   edge +%.2f%%   kelly %.2f%%', edge * 100, kelly * 100)
-      end
-      puts line
+      line += format('   edge +%.2f%%   kelly %.2f%%', edge * 100, kelly * 100) if edge && edge > 0
+      lines << line
     end
   end
-  puts sep
+  lines << sep
+  lines.join("\n")
+end
+
+def print_proposals
+  body = build_proposals
+  puts body unless body.empty?
+end
+
+GMAIL_ADDRESS = 'marky.rigas@gmail.com'.freeze
+
+def send_proposals_email(body)
+  password = ENV['GMAIL_APP_PASSWORD']
+  unless password
+    puts "GMAIL_APP_PASSWORD env var not set — skipping email"
+    return
+  end
+
+  date_str = Date.today.strftime('%Y-%m-%d')
+  message = <<~MSG
+    From: Soccer Predictor <#{GMAIL_ADDRESS}>
+    To: #{GMAIL_ADDRESS}
+    Subject: Bet proposals #{date_str}
+    Content-Type: text/plain; charset=UTF-8
+
+    #{body}
+  MSG
+
+  smtp = Net::SMTP.new('smtp.gmail.com', 587)
+  smtp.enable_starttls
+  smtp.start('localhost', GMAIL_ADDRESS, password, :login) do |s|
+    s.send_message(message, GMAIL_ADDRESS, GMAIL_ADDRESS)
+  end
+  puts "Email sent to #{GMAIL_ADDRESS}"
+rescue => e
+  puts "Email failed: #{e.message}"
 end
 
 def simulate_match(home_team, away_team, stats)
@@ -526,4 +560,8 @@ begin
 ensure
   export_to_csv(results)
   print_proposals
+  if results.any?
+    body = build_proposals
+    send_proposals_email(body) unless body.empty?
+  end
 end
