@@ -123,7 +123,6 @@ def starting_eleven(url)
 
   a
 rescue JSON::ParserError
-  @br.quit
   return nil
 rescue Selenium::WebDriver::Error::StaleElementReferenceError
   @br.quit
@@ -161,22 +160,8 @@ def predicted_eleven(url)
     }
     a
   end
-rescue Selenium::WebDriver::Error::StaleElementReferenceError
-  @br.quit
-  puts "Encountered a stale element reference, retrying..."
-  return nil
-rescue Net::ReadTimeout => e
-  @br.quit
-  puts "Encountered a timeout, retrying..."
-  return nil
-rescue Watir::Wait::TimeoutError => e
-  @br.quit
-  puts "Encountered a timeout, retrying..."
-  return nil
 rescue => e
   return nil
-ensure
-  @br.quit
 end
 
 def goal_and_assist(goal, assist)
@@ -236,7 +221,7 @@ def xgs_new(home_team, away_team, home_id, away_id, starting_eleven, competition
     hsh[p][1] = apps == 0 ? 0 : shots / apps.to_f
   end
   xgs_warning = true if away_xgs.count{ |_,v| v == 0} > 2
-  return if home_xgs.values.all?{|x| x == [0,0]}
+  return if away_xgs.values.all?{|x| x == [0,0]}
 
   away_cards_url = "https://www.whoscored.com/StatisticsFeed/1/GetPlayerStatistics?category=summary&subcategory=all&statsAccumulationType=0&isCurrent=true&playerId=&teamIds=#{away_id}&matchId=&stageId=&tournamentOptions=#{competition_id}&sortBy=Rating&sortAscending=&age=&ageComparisonType=&appearances=&appearancesComparisonType=&field=Overall&nationality=&positionOptions=&timeOfTheGameEnd=&timeOfTheGameStart=&isMinApp=false&page=&includeZeroValues=true&numberOfPlayersToPick=&incPens="
   puts 'Fetching away cards...'
@@ -244,9 +229,9 @@ def xgs_new(home_team, away_team, home_id, away_id, starting_eleven, competition
   @br.goto(away_cards_url)
 
   away_cards = starting_eleven[:away].each_with_object({}) do |p, hsh|
-    yellow = JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['lastName'].include?(p) && x['tournamentId'] == competition_id}&.first.try(:[], 'yellowCard') || 0
-    red = JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['lastName'].include?(p) && x['tournamentId'] == competition_id}&.first.try(:[], 'redCard') || 0
-    apps = JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['lastName'].include?(p) && x['tournamentId'] == competition_id}&.first.try(:[], 'apps') || 0
+    yellow = JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['name'].include?(p) && x['tournamentId'] == competition_id}&.first.try(:[], 'yellowCard') || 0
+    red = JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['name'].include?(p) && x['tournamentId'] == competition_id}&.first.try(:[], 'redCard') || 0
+    apps = JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['name'].include?(p) && x['tournamentId'] == competition_id}&.first.try(:[], 'apps') || 0
     hsh[p] = apps.zero? ? 0 : ((yellow + red) / apps.to_f)
   end
   sleep(1)
