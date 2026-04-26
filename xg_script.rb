@@ -256,7 +256,7 @@ def xgs_new(home_team, away_team, home_id, away_id, starting_eleven, competition
     away_xgs: away_xgs,
     xgs_warning: xgs_warning,
     home_cards: home_cards,
-    away_cards: home_cards
+    away_cards: away_cards
   }
   stats
 rescue => e
@@ -302,7 +302,9 @@ def print_proposals
     g.each_with_index do |(k,v), i|
       next if ['Missing XGS', 'Home', 'Away'].include?(k)
 
-      if  v.to_f > THRESHOLDS.select{|_,v| v[:index].include?(i)}.values.first[:value]
+      threshold = THRESHOLDS.select{|_,v| v[:index].include?(i)}.values.first
+      next unless threshold
+      if v.to_f >= threshold[:value]
         proposals["#{g['Home']}-#{g['Away']}"] << "#{k}(#{v})"
       end
       proposals
