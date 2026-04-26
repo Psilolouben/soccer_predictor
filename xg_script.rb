@@ -69,6 +69,7 @@ AVAILABLE_LEAGUES = {
 def games(url)
   @br = Watir::Browser.new :chrome, options: {
   args: [
+    '--headless=new',
     '--disable-blink-features=AutomationControlled', # Disables WebDriver detection
     '--disable-infobars', # Removes "Chrome is being controlled by automated software"
     '--disable-extensions',
@@ -143,7 +144,7 @@ ensure
 end
 
 def predicted_eleven(url)
-  Puppeteer.launch(headless: false) do |browser|
+  Puppeteer.launch(headless: true) do |browser|
     page = browser.new_page
     page.goto(url, wait_until: 'networkidle2')
     puts 'Fetching starting eleven...'
@@ -183,7 +184,18 @@ def goal_and_assist(goal, assist)
 end
 
 def xgs_new(home_team, away_team, home_id, away_id, starting_eleven, competition_id)
-  @br = Watir::Browser.new
+  @br = Watir::Browser.new :chrome, options: {
+    args: [
+      '--headless=new',
+      '--disable-blink-features=AutomationControlled',
+      '--disable-infobars',
+      '--disable-extensions',
+      '--no-sandbox',
+      '--disable-dev-shm-usage',
+      '--start-maximized',
+      'user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+    ]
+  }
   home_url = "https://www.whoscored.com/StatisticsFeed/1/GetPlayerStatistics?category=xg-stats&subcategory=summary&statsAccumulationType=0&tournamentOptions=#{competition_id}&isCurrent=true&playerId=&teamIds=#{home_id}&sortBy=xg&sortAscending=false&field=Overall&isMinApp=false&page=&includeZeroValues=true&numberOfPlayersToPick=&incPens=true"
   away_url = "https://www.whoscored.com/StatisticsFeed/1/GetPlayerStatistics?category=xg-stats&subcategory=summary&statsAccumulationType=0&tournamentOptions=#{competition_id}&isCurrent=true&playerId=&teamIds=#{away_id}&sortBy=xg&sortAscending=false&field=Overall&isMinApp=false&page=&includeZeroValues=true&numberOfPlayersToPick=&incPens=true"
   home_team_url = "https://www.whoscored.com/Teams/#{home_id}/Show"
