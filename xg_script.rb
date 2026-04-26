@@ -21,7 +21,7 @@ THRESHOLDS = {
   UNDER_OVER_HALF_THRESHOLD: { index: [-1], value: 80 },
   SINGLE_THRESHOLD: { index: [2,4], value: 60 },
   DRAW_THRESHOLD: { index: [3], value: 35 },
-  DOUBLE_THRESHOLD: { index: [5, 6, 7], value: 75 },
+  DOUBLE_THRESHOLD: { index: [5, 6, 7], value: 80 },
   UNDER_OVER_THRESHOLD: { index: [8, 9, 10, 11, 12, 13], value: 80 },
   GG_THRESHOLD: { index: [14], value: 80 },
   CORNER_THRESHOLD: { index: [-1], value: 80 },
@@ -43,7 +43,7 @@ NAMES_MAP = {
   'Deportivo Alaves' => 'Alaves'
 }
 
-NUMBER_OF_SIMULATIONS = 10000
+NUMBER_OF_SIMULATIONS = 100_000
 
 AVAILABLE_LEAGUES = {
     4 => 'LaLiga',
@@ -55,7 +55,7 @@ AVAILABLE_LEAGUES = {
     20 => 'Premiership',
     21 => 'Liga Portugal',
     2 => 'Premier League',
-    7 => 'Championship',
+    #7 => 'Championship',
     13 => 'Eredivisie',
     715 => 'Conference League',
     65 => 'Greek Super League',
@@ -273,13 +273,12 @@ def write_to_index_file(res)
 end
 
 def export_to_csv(proposals)
-  headers = ['Home', 'Away','1', 'X', '2', '1X', 'X2', '12', 'O15', 'U15', 'O25', 'U25', 'O35', 'U35', 'GG', 'Missing XGS', 'Both Cards']
+  headers = ['Home', 'Away', '1', 'X', '2', '1X', 'X2', '12', 'O15', 'U15', 'O25', 'U25', 'O35', 'U35', 'GG', 'Missing XGS', 'Both Cards', 'Score', 'Bet1', 'BetX', 'Bet2', 'Edge1', 'EdgeX', 'Edge2', 'Kelly1', 'KellyX', 'Kelly2']
   CSV.open("bet_proposals.csv", "a", :write_headers=> (!File.exist?("bet_proposals.csv") || !CSV.read("bet_proposals.csv", headers: true).headers == headers),
                                      :headers => headers, col_sep: ';') do |csv|
     proposals.each do |game|
-      #puts "#{game[:home_team]}-#{game[:away_team]}: #{game.except(:home_team, :away_team, :missing_xgs).values.select{|k, v| v.to_i > 80}.join(',')}"
-      puts game if (game.except(:home_team, :away_team, :missing_xgs).values.any?{|v| v.to_i > 80} && !game[:missing_xgs])
-      csv << [game[:home_team], game[:away_team], game[:home], game[:draw], game[:away], game[:home] + game[:draw], game[:draw] + game[:away], game[:home] + game[:away], game[:over15], game[:under15], game[:over25], game[:under25], game[:over35], game[:under35], game[:gg], game[:missing_xgs], game[:both_cards]]
+      puts game if (game.except(:home_team, :away_team, :missing_xgs, :score).values.any?{|v| v.to_i > 80} && !game[:missing_xgs])
+      csv << [game[:home_team], game[:away_team], game[:home], game[:draw], game[:away], game[:home] + game[:draw], game[:draw] + game[:away], game[:home] + game[:away], game[:over15], game[:under15], game[:over25], game[:under25], game[:over35], game[:under35], game[:gg], game[:missing_xgs], game[:both_cards], game[:score], game[:bet1], game[:betx], game[:bet2], game[:home_edge], game[:draw_edge], game[:away_edge], game[:home_kelly], game[:draw_kelly], game[:away_kelly]]
     end
   end;0
 end
@@ -300,7 +299,7 @@ def print_proposals
     next if g['Missing XGS'] == 'true'
 
     g.each_with_index do |(k,v), i|
-      next if ['Missing XGS', 'Home', 'Away'].include?(k)
+      next if ['Missing XGS', 'Home', 'Away', 'Score', 'Bet1', 'BetX', 'Bet2', 'Edge1', 'EdgeX', 'Edge2', 'Kelly1', 'KellyX', 'Kelly2'].include?(k)
 
       threshold = THRESHOLDS.select{|_,v| v[:index].include?(i)}.values.first
       next unless threshold
@@ -330,6 +329,7 @@ def simulate_match(home_team, away_team, stats)
     gg: 0,
     two_three: 0,
     both_cards: 0,
+    score: ''
     #home_scorers: {},
     #away_scorers: {}
   }
@@ -412,8 +412,9 @@ def simulate_match(home_team, away_team, stats)
 
   #res[:home_scorers] = home_scorers.flatten.tally.transform_values{|x| x / (NUMBER_OF_SIMULATIONS / 100).to_f}
   #res[:away_scorers] = away_scorers.flatten.tally.transform_values{|x| x / (NUMBER_OF_SIMULATIONS / 100).to_f}
+  res[:score] = scores.tally.transform_values{|v| v/(NUMBER_OF_SIMULATIONS.to_f / 100)}.sort_by{|_, v| v}.reverse.first.join(':')
 
-  return res.merge(res.except(:home_team, :away_team, :missing_xgs, :home_scorers, :away_scorers).transform_values{ |v| v / (NUMBER_OF_SIMULATIONS / 100.0) })
+  return res.merge(res.except(:home_team, :away_team, :missing_xgs, :home_scorers, :away_scorers, :score).transform_values{ |v| v / (NUMBER_OF_SIMULATIONS / 100.0) })
 rescue => e
   #binding.pry
 end
@@ -445,7 +446,22 @@ begin
       #binding.pry
       next unless match_xgs
 
-      results << simulate_match(NAMES_MAP[m[:home]] || m[:home], NAMES_MAP[m[:away]] || m[:away], match_xgs)
+      sim = simulate_match(NAMES_MAP[m[:home]] || m[:home], NAMES_MAP[m[:away]] || m[:away], match_xgs)
+      if sim && m[:bet1].to_f > 1 && m[:betx].to_f > 1 && m[:bet2].to_f > 1
+        home_edge = (sim[:home] / 100.0) - (1.0 / m[:bet1])
+        draw_edge = (sim[:draw] / 100.0) - (1.0 / m[:betx])
+        away_edge = (sim[:away] / 100.0) - (1.0 / m[:bet2])
+        sim.merge!(
+          bet1: m[:bet1], betx: m[:betx], bet2: m[:bet2],
+          home_edge: home_edge.round(4),
+          draw_edge: draw_edge.round(4),
+          away_edge: away_edge.round(4),
+          home_kelly: home_edge > 0 ? (home_edge / (m[:bet1] - 1)).round(4) : 0,
+          draw_kelly: draw_edge > 0 ? (draw_edge / (m[:betx] - 1)).round(4) : 0,
+          away_kelly: away_edge > 0 ? (away_edge / (m[:bet2] - 1)).round(4) : 0
+        )
+      end
+      results << sim
 
       write_to_index_file(m[:id])
     rescue => e
