@@ -45,6 +45,15 @@ NAMES_MAP = {
 
 NUMBER_OF_SIMULATIONS = 100_000
 
+def slugify(str)
+  ActiveSupport::Inflector.transliterate(str.to_s).downcase.gsub(/[^a-z0-9]+/, '-').gsub(/^-+|-+$/, '')
+end
+
+def preview_season
+  y = Date.today.year
+  Date.today.month <= 7 ? "#{y - 1}-#{y}" : "#{y}-#{y + 1}"
+end
+
 AVAILABLE_LEAGUES = {
     4 => 'LaLiga',
     5 => 'Serie A',
@@ -93,7 +102,7 @@ def games(url)
         home_id: g['homeTeamId'],
         away: g['awayTeamName'],
         away_id: g['awayTeamId'],
-        url: "https://www.whoscored.com/Matches/#{g['id']}/Preview/",
+        url: "https://www.whoscored.com/matches/#{g['id']}/preview/#{slugify(g['homeTeamCountryName'])}-#{slugify(x['tournamentName'])}-#{preview_season}-#{slugify(g['homeTeamName'])}-#{slugify(g['awayTeamName'])}",
         lineup_url: "https://www.whoscored.com/livescores/#{g['id']}/lineups",
         tournament_id: x['tournamentId'],
         tournament_name: x['tournamentName'],
@@ -112,7 +121,18 @@ ensure
 end
 
 def starting_eleven(url)
-  @br = Watir::Browser.new
+  @br = Watir::Browser.new :chrome, options: {
+    args: [
+      '--headless=new',
+      '--disable-blink-features=AutomationControlled',
+      '--disable-infobars',
+      '--disable-extensions',
+      '--no-sandbox',
+      '--disable-dev-shm-usage',
+      '--start-maximized',
+      'user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+    ]
+  }
   @br.goto(url)
 
   a =  {
@@ -143,25 +163,34 @@ ensure
 end
 
 def predicted_eleven(url)
-  Puppeteer.launch(headless: true) do |browser|
-    page = browser.new_page
-    page.goto(url, wait_until: 'networkidle2')
-    puts 'Fetching starting eleven...'
-    player_selector = '.player-name.player-link.cnt-oflow.rc'
-    player_elements = page.query_selector_all(player_selector).map do |element|
-      element.evaluate('el => el.textContent')
-    end
+  @br = Watir::Browser.new :chrome, options: {
+    args: [
+      '--headless=new',
+      '--disable-blink-features=AutomationControlled',
+      '--disable-infobars',
+      '--disable-extensions',
+      '--no-sandbox',
+      '--disable-dev-shm-usage',
+      '--start-maximized',
+      'user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+    ]
+  }
+  puts 'Fetching starting eleven...'
+  @br.goto(url)
+  return nil unless @br.title.include?('Preview')
 
-    return if player_elements.empty?
+  doc = Nokogiri::HTML(@br.html)
+  names = doc.css('.player-name.player-link.cnt-oflow.rc').map(&:text)
+  return nil if names.count < 22
 
-    a = {
-      home: player_elements.take(11),
-      away: player_elements.reverse.take(11)
-    }
-    a
-  end
+  {
+    home: names.take(11),
+    away: names.reverse.take(11)
+  }
 rescue => e
   return nil
+ensure
+  @br.quit
 end
 
 def goal_and_assist(goal, assist)
@@ -446,8 +475,9 @@ begin
           away_kelly: away_edge > 0 ? (away_edge / (m[:bet2] - 1)).round(4) : 0
         )
       end
-      results << sim
+      next unless sim
 
+      results << sim
       write_to_index_file(m[:id])
     rescue => e
       next
