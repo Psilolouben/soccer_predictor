@@ -291,8 +291,7 @@ def export_to_csv(proposals)
   CSV.open("bet_proposals.csv", "a", :write_headers=> (!File.exist?("bet_proposals.csv") || !CSV.read("bet_proposals.csv", headers: true).headers == headers),
                                      :headers => headers, col_sep: ';') do |csv|
     proposals.each do |game|
-      puts game if (game.except(:home_team, :away_team, :missing_xgs, :score).values.any?{|v| v.to_i > 80} && !game[:missing_xgs])
-      csv << [game[:home_team], game[:away_team], game[:home], game[:draw], game[:away], game[:home] + game[:draw], game[:draw] + game[:away], game[:home] + game[:away], game[:over15], game[:under15], game[:over25], game[:under25], game[:over35], game[:under35], game[:gg], game[:missing_xgs], game[:both_cards], game[:score], game[:bet1], game[:betx], game[:bet2], game[:home_edge], game[:draw_edge], game[:away_edge], game[:home_kelly], game[:draw_kelly], game[:away_kelly]]
+      csv <<[game[:home_team], game[:away_team], game[:home], game[:draw], game[:away], game[:home] + game[:draw], game[:draw] + game[:away], game[:home] + game[:away], game[:over15], game[:under15], game[:over25], game[:under25], game[:over35], game[:under35], game[:gg], game[:missing_xgs], game[:both_cards], game[:score], game[:bet1], game[:betx], game[:bet2], game[:home_edge], game[:draw_edge], game[:away_edge], game[:home_kelly], game[:draw_kelly], game[:away_kelly]]
     end
   end;0
 end
@@ -307,23 +306,59 @@ end
 
 def print_proposals
   games = import_from_csv
-  proposals = Hash.new {|hsh, key| hsh[key] = [] }
+  skip_cols = ['Missing XGS', 'Home', 'Away', 'Score', 'Bet1', 'BetX', 'Bet2', 'Edge1', 'EdgeX', 'Edge2', 'Kelly1', 'KellyX', 'Kelly2']
+  edge_col  = { '1' => 'Edge1',  'X' => 'EdgeX',  '2' => 'Edge2'  }
+  kelly_col = { '1' => 'Kelly1', 'X' => 'KellyX', '2' => 'Kelly2' }
 
-  games.each do |g|
+  # keep only the last simulation result per match
+  by_match = {}
+  games.each { |g| by_match["#{g['Home']}-#{g['Away']}"] = g }
+
+  rows = by_match.filter_map do |_, g|
     next if g['Missing XGS'] == 'true'
 
-    g.each_with_index do |(k,v), i|
-      next if ['Missing XGS', 'Home', 'Away', 'Score', 'Bet1', 'BetX', 'Bet2', 'Edge1', 'EdgeX', 'Edge2', 'Kelly1', 'KellyX', 'Kelly2'].include?(k)
-
-      threshold = THRESHOLDS.select{|_,v| v[:index].include?(i)}.values.first
+    bets = []
+    g.each_with_index do |(k, v), i|
+      next if skip_cols.include?(k)
+      threshold = THRESHOLDS.select { |_, t| t[:index].include?(i) }.values.first
       next unless threshold
-      if v.to_f >= threshold[:value]
-        proposals["#{g['Home']}-#{g['Away']}"] << "#{k}(#{v})"
+      bets << { name: k, prob: v.to_f } if v.to_f >= threshold[:value]
+    end
+    next if bets.empty?
+
+    { g: g, bets: bets }
+  end
+
+  return if rows.empty?
+
+  sep = '─' * 56
+  rows.each do |row|
+    g, bets = row[:g], row[:bets]
+
+    score_part, pct_part = g['Score'].to_s.split(':')
+    score_str = pct_part ? "#{score_part} (#{pct_part.to_f.round(1)}%)" : ''
+
+    odds = [g['Bet1'].to_f, g['BetX'].to_f, g['Bet2'].to_f]
+    odds_str = odds.map { |o| o > 0 ? format('%.2f', o) : '-' }.join(' / ')
+
+    puts sep
+    header = "#{g['Home']} vs #{g['Away']}"
+    puts "#{header.ljust(38)}  #{score_str}"
+    puts "  Odds: #{odds_str}"
+    bets.each do |bet|
+      ek = edge_col[bet[:name]]
+      kk = kelly_col[bet[:name]]
+      edge  = ek ? g[ek].to_f  : nil
+      kelly = kk ? g[kk].to_f : nil
+
+      line = format('  %-16s %5.1f%%', bet[:name], bet[:prob])
+      if edge && edge > 0
+        line += format('   edge +%.2f%%   kelly %.2f%%', edge * 100, kelly * 100)
       end
-      proposals
+      puts line
     end
   end
-  proposals.each{ |k, v| pp "#{k} -> #{v.join(',')}"}
+  puts sep
 end
 
 def simulate_match(home_team, away_team, stats)
