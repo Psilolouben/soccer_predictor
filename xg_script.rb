@@ -36,6 +36,12 @@ THRESHOLDS = {
 # its THRESHOLD but where the bookmaker is significantly mispricing the outcome.
 EDGE_EXCEPTION_THRESHOLD = 0.10
 
+# Home advantage: home team gets +10% shot volume, away team gets -10%.
+# Applied to avg_shots in simulate_match. xg_per_shot is unchanged.
+# Note: neutral venue matches will still receive this adjustment.
+HOME_ADVANTAGE_FACTOR  = 1.10
+AWAY_DISADVANTAGE_FACTOR = 0.90
+
 NAMES_MAP = {
   'Wolves' => 'Wolverhampton_Wanderers',
   'Newcastle' => 'Newcastle_United',
@@ -224,10 +230,10 @@ def xgs_new(home_team, away_team, home_id, away_id, starting_eleven, competition
   @br.goto(home_url)
   xgs_warning = false
   home_xgs = starting_eleven[:home].each_with_object({}) do |p, hsh|
-    shots = (JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['name'].include?(p) && x['tournamentId'] == competition_id}&.first.try(:[], 'totalShots') || 0)
-    apps = (JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['name'].include?(p) && x['tournamentId'] == competition_id}&.first.try(:[], 'apps')  || 0)
+    shots = (JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['name'].include?(p) && x['tournamentId'].to_i == competition_id.to_i}&.first.try(:[], 'totalShots') || 0)
+    apps = (JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['name'].include?(p) && x['tournamentId'].to_i == competition_id.to_i}&.first.try(:[], 'apps')  || 0)
     hsh[p] = []
-    hsh[p][0] = JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['name'].include?(p) && x['tournamentId'] == competition_id}&.first.try(:[], 'xGPerShot') || 0
+    hsh[p][0] = JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['name'].include?(p) && x['tournamentId'].to_i == competition_id.to_i}&.first.try(:[], 'xGPerShot') || 0
     hsh[p][1] = apps == 0 ? 0 : shots / apps.to_f
   end
   xgs_warning = true if home_xgs.count{ |_,v| v == 0} > 2
@@ -238,9 +244,9 @@ def xgs_new(home_team, away_team, home_id, away_id, starting_eleven, competition
   puts 'Fetching home cards...'
 
   home_cards = starting_eleven[:home].each_with_object({}) do |p, hsh|
-    yellow = JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['name'].include?(p) && x['tournamentId'] == competition_id}&.first.try(:[], 'yellowCard') || 0
-    red = JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['name'].include?(p) && x['tournamentId'] == competition_id}&.first.try(:[], 'redCard') || 0
-    apps = JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['name'].include?(p) && x['tournamentId'] == competition_id}&.first.try(:[], 'apps') || 0
+    yellow = JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['name'].include?(p) && x['tournamentId'].to_i == competition_id.to_i}&.first.try(:[], 'yellowCard') || 0
+    red = JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['name'].include?(p) && x['tournamentId'].to_i == competition_id.to_i}&.first.try(:[], 'redCard') || 0
+    apps = JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['name'].include?(p) && x['tournamentId'].to_i == competition_id.to_i}&.first.try(:[], 'apps') || 0
     hsh[p] = apps.zero? ? 0 : ((yellow + red) / apps.to_f)
   end
 
@@ -248,10 +254,10 @@ def xgs_new(home_team, away_team, home_id, away_id, starting_eleven, competition
   puts 'Fetching away xGs...'
 
   away_xgs = starting_eleven[:away].each_with_object({}) do |p, hsh|
-    shots = (JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['name'].include?(p) && x['tournamentId'] == competition_id}&.first.try(:[], 'totalShots') || 0)
-    apps = (JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['name'].include?(p) && x['tournamentId'] == competition_id}&.first.try(:[], 'apps')  || 0)
+    shots = (JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['name'].include?(p) && x['tournamentId'].to_i == competition_id.to_i}&.first.try(:[], 'totalShots') || 0)
+    apps = (JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['name'].include?(p) && x['tournamentId'].to_i == competition_id.to_i}&.first.try(:[], 'apps')  || 0)
     hsh[p] = []
-    hsh[p][0] = JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['name'].include?(p) && x['tournamentId'] == competition_id}&.first.try(:[], 'xGPerShot') || 0
+    hsh[p][0] = JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['name'].include?(p) && x['tournamentId'].to_i == competition_id.to_i}&.first.try(:[], 'xGPerShot') || 0
     hsh[p][1] = apps == 0 ? 0 : shots / apps.to_f
   end
   xgs_warning = true if away_xgs.count{ |_,v| v == 0} > 2
@@ -263,9 +269,9 @@ def xgs_new(home_team, away_team, home_id, away_id, starting_eleven, competition
   @br.goto(away_cards_url)
 
   away_cards = starting_eleven[:away].each_with_object({}) do |p, hsh|
-    yellow = JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['name'].include?(p) && x['tournamentId'] == competition_id}&.first.try(:[], 'yellowCard') || 0
-    red = JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['name'].include?(p) && x['tournamentId'] == competition_id}&.first.try(:[], 'redCard') || 0
-    apps = JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['name'].include?(p) && x['tournamentId'] == competition_id}&.first.try(:[], 'apps') || 0
+    yellow = JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['name'].include?(p) && x['tournamentId'].to_i == competition_id.to_i}&.first.try(:[], 'yellowCard') || 0
+    red = JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['name'].include?(p) && x['tournamentId'].to_i == competition_id.to_i}&.first.try(:[], 'redCard') || 0
+    apps = JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['name'].include?(p) && x['tournamentId'].to_i == competition_id.to_i}&.first.try(:[], 'apps') || 0
     hsh[p] = apps.zero? ? 0 : ((yellow + red) / apps.to_f)
   end
   sleep(1)
@@ -458,12 +464,12 @@ def simulate_match(home_team, away_team, stats)
 
   NUMBER_OF_SIMULATIONS.times do
     home_xg_stats = stats[:home_xgs].transform_values do |(xg_per_shot, avg_shots)|
-      shots = Distribution::Poisson.rng(avg_shots)
+      shots = Distribution::Poisson.rng(avg_shots * HOME_ADVANTAGE_FACTOR)
       goals = Array.new(shots) { rand < xg_per_shot ? 1 : 0 }.sum
       goals
     end.select { |_, goals| goals > 0 }
     away_xg_stats = stats[:away_xgs].transform_values do |(xg_per_shot, avg_shots)|
-      shots = Distribution::Poisson.rng(avg_shots)
+      shots = Distribution::Poisson.rng(avg_shots * AWAY_DISADVANTAGE_FACTOR)
       goals = Array.new(shots) { rand < xg_per_shot ? 1 : 0 }.sum
       goals
     end.select { |_, goals| goals > 0 }
@@ -546,7 +552,7 @@ begin
   if ARGV.count < 3
     ids = read_index_file
 
-    date_str = Date.today.strftime("%Y%m%d")
+    date_str = Date.tomorrow.strftime("%Y%m%d")
     matches = games("https://www.whoscored.com/livescores/data?d=#{date_str}&isSummary=false")
 
     matches.each do |m|
