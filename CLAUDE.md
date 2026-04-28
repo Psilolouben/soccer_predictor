@@ -43,10 +43,21 @@ print_proposals() — filter CSV rows against THRESHOLDS and print eligible bets
 
 ## CSV output (`bet_proposals.csv`)
 Columns (semicolon-delimited):
-`Home; Away; 1; X; 2; 1X; X2; 12; O15; U15; O25; U25; O35; U35; GG; Missing XGS; Both Cards; Score; Bet1; BetX; Bet2; Edge1; EdgeX; Edge2; Kelly1; KellyX; Kelly2`
+```
+Home; Away; 1; X; 2; 1X; X2; 12; O15; U15; O25; U25; O35; U35; GG; Missing XGS; Both Cards; Score
+Bet1; BetX; Bet2; BetO15; BetU15; BetO25; BetU25; BetO35; BetU35; BetGG; BetNG
+Edge1; EdgeX; Edge2; EdgeO15; EdgeU15; EdgeO25; EdgeU25; EdgeO35; EdgeU35; EdgeGG; EdgeNG
+Kelly1; KellyX; Kelly2; KellyO15; KellyU15; KellyO25; KellyU25; KellyO35; KellyU35; KellyGG; KellyNG
+```
 
-Edge = simulated probability minus implied probability from decimal odds.
-Kelly = edge / (decimal_odds - 1), only output when edge > 0.
+Edge = simulated probability minus implied probability from decimal odds (sim% / 100 − 1/odds).
+Kelly = edge / (decimal_odds − 1), only stored when edge > 0.
+NG probability is derived as (100 − GG%) — there is no separate NG simulation column.
+
+**WhoScored JSON bet keys** (in `games()`): `home`, `draw`, `away`, `over15`, `under15`,
+`over25`, `under25`, `over35`, `under35`, `gg`, `ng`. These keys are best-guess matches
+to WhoScored's livescores JSON structure — if a market returns 0 odds, the key name may
+differ and needs adjustment.
 
 ## Thresholds (THRESHOLDS constant)
 Used by `print_proposals` to flag eligible bets. Column indices map to:
@@ -57,29 +68,26 @@ Used by `print_proposals` to flag eligible bets. Column indices map to:
 - index 14 → GG: 80%
 - index 16 → both cards: 80%
 
-Columns for Score, Bet1/BetX/Bet2, Edge*, Kelly* are skipped in threshold checks.
+All Bet*, Edge*, Kelly* columns are in `skip_cols` and excluded from threshold checks.
 
 ## Edge-based exceptional bucket
-`build_proposals` / `print_proposals` must surface a second class of bet: cases where the
-bookmaker odds are significantly **mispricing** the simulation output, even when the raw
-simulated probability does not meet the standard THRESHOLD.
+`build_proposals` / `print_proposals` surfaces a second class of bet: cases where the
+bookmaker odds are significantly **mispricing** the simulation output for **any market
+with stored odds**, even when the raw simulated probability does not meet the THRESHOLD.
 
-**Rule**: for the 1/X/2 markets (the only ones with Edge/Kelly columns), also include the
-bet if:
+**Rule**: for all markets with Edge columns (1/X/2, O15/U15, O25/U25, O35/U35, GG, NG),
+also include the bet if:
 - `edge > EDGE_EXCEPTION_THRESHOLD` (bookmaker underestimates — value bet), OR
-- `edge < -EDGE_EXCEPTION_THRESHOLD` (bookmaker overestimates — the outcome is much less
-  likely than the odds imply; flag as a "lay / fade" signal)
+- `edge < -EDGE_EXCEPTION_THRESHOLD` (bookmaker overestimates — flag as "lay / fade")
 
 `EDGE_EXCEPTION_THRESHOLD = 0.10` (i.e. ±10 percentage points) is the suggested default.
 
-These rows must be clearly labeled in the printed output (e.g. `[EDGE]` tag) so they are
-visually distinct from threshold-passing bets. A bet that qualifies on *both* grounds
-(threshold AND edge) should be printed once with both tags.
+These rows are labeled `[EDGE]` or `[FADE]` in the printed output. A bet that qualifies on
+*both* grounds (threshold AND edge) is printed once with both tags.
 
-**Why this matters**: a 55% home-win probability misses the 60% SINGLE_THRESHOLD, but if
-the bookmaker prices it at 2.50 (implied 40%), the +15 pp edge is actionable regardless.
-Conversely, a draw at 25% that a bookmaker prices at 1.80 (implied 56%) is a strong fade
-signal even though 25% is below the 35% DRAW_THRESHOLD.
+**Why this matters**: GG at 72% misses the 80% GG_THRESHOLD, but if the bookmaker prices
+it at 2.20 (implied 45%), the +27 pp edge is clearly actionable. Conversely, O25 at 55%
+that a bookmaker prices at 1.50 (implied 67%) is a strong fade even below threshold.
 
 ## Available leagues (AVAILABLE_LEAGUES)
 Keyed by WhoScored tournament ID. Championship (id 7) is currently commented out.

@@ -112,9 +112,17 @@ def games(url)
         lineup_url: "https://www.whoscored.com/livescores/#{g['id']}/lineups",
         tournament_id: x['tournamentId'],
         tournament_name: x['tournamentName'],
-        bet1: g.dig('bets', 'home', 'offers')&.first{|m| m['bettingProvider'] == 'B3'}&.dig('oddsDecimal')&.to_f,
-        betx: g.dig('bets', 'draw', 'offers')&.first{|m| m['bettingProvider'] == 'B3'}&.dig('oddsDecimal')&.to_f,
-        bet2: g.dig('bets', 'away', 'offers')&.first{|m| m['bettingProvider'] == 'B3'}&.dig('oddsDecimal')&.to_f
+        bet1:    g.dig('bets', 'home',    'offers')&.first{|m| m['bettingProvider'] == 'B3'}&.dig('oddsDecimal')&.to_f,
+        betx:    g.dig('bets', 'draw',    'offers')&.first{|m| m['bettingProvider'] == 'B3'}&.dig('oddsDecimal')&.to_f,
+        bet2:    g.dig('bets', 'away',    'offers')&.first{|m| m['bettingProvider'] == 'B3'}&.dig('oddsDecimal')&.to_f,
+        bet_o15: g.dig('bets', 'over15',  'offers')&.first{|m| m['bettingProvider'] == 'B3'}&.dig('oddsDecimal')&.to_f,
+        bet_u15: g.dig('bets', 'under15', 'offers')&.first{|m| m['bettingProvider'] == 'B3'}&.dig('oddsDecimal')&.to_f,
+        bet_o25: g.dig('bets', 'over25',  'offers')&.first{|m| m['bettingProvider'] == 'B3'}&.dig('oddsDecimal')&.to_f,
+        bet_u25: g.dig('bets', 'under25', 'offers')&.first{|m| m['bettingProvider'] == 'B3'}&.dig('oddsDecimal')&.to_f,
+        bet_o35: g.dig('bets', 'over35',  'offers')&.first{|m| m['bettingProvider'] == 'B3'}&.dig('oddsDecimal')&.to_f,
+        bet_u35: g.dig('bets', 'under35', 'offers')&.first{|m| m['bettingProvider'] == 'B3'}&.dig('oddsDecimal')&.to_f,
+        bet_gg:  g.dig('bets', 'gg',      'offers')&.first{|m| m['bettingProvider'] == 'B3'}&.dig('oddsDecimal')&.to_f,
+        bet_ng:  g.dig('bets', 'ng',      'offers')&.first{|m| m['bettingProvider'] == 'B3'}&.dig('oddsDecimal')&.to_f
       }
     end
   }.flatten.compact
@@ -294,11 +302,29 @@ def write_to_index_file(res)
 end
 
 def export_to_csv(proposals)
-  headers = ['Home', 'Away', '1', 'X', '2', '1X', 'X2', '12', 'O15', 'U15', 'O25', 'U25', 'O35', 'U35', 'GG', 'Missing XGS', 'Both Cards', 'Score', 'Bet1', 'BetX', 'Bet2', 'Edge1', 'EdgeX', 'Edge2', 'Kelly1', 'KellyX', 'Kelly2']
+  headers = ['Home', 'Away', '1', 'X', '2', '1X', 'X2', '12', 'O15', 'U15', 'O25', 'U25', 'O35', 'U35', 'GG', 'Missing XGS', 'Both Cards', 'Score',
+             'Bet1', 'BetX', 'Bet2', 'BetO15', 'BetU15', 'BetO25', 'BetU25', 'BetO35', 'BetU35', 'BetGG', 'BetNG',
+             'Edge1', 'EdgeX', 'Edge2', 'EdgeO15', 'EdgeU15', 'EdgeO25', 'EdgeU25', 'EdgeO35', 'EdgeU35', 'EdgeGG', 'EdgeNG',
+             'Kelly1', 'KellyX', 'Kelly2', 'KellyO15', 'KellyU15', 'KellyO25', 'KellyU25', 'KellyO35', 'KellyU35', 'KellyGG', 'KellyNG']
   CSV.open("bet_proposals.csv", "a", :write_headers=> (!File.exist?("bet_proposals.csv") || !CSV.read("bet_proposals.csv", headers: true).headers == headers),
                                      :headers => headers, col_sep: ';') do |csv|
     proposals.each do |game|
-      csv <<[game[:home_team], game[:away_team], game[:home], game[:draw], game[:away], game[:home] + game[:draw], game[:draw] + game[:away], game[:home] + game[:away], game[:over15], game[:under15], game[:over25], game[:under25], game[:over35], game[:under35], game[:gg], game[:missing_xgs], game[:both_cards], game[:score], game[:bet1], game[:betx], game[:bet2], game[:home_edge], game[:draw_edge], game[:away_edge], game[:home_kelly], game[:draw_kelly], game[:away_kelly]]
+      csv << [
+        game[:home_team], game[:away_team],
+        game[:home], game[:draw], game[:away],
+        game[:home].to_f + game[:draw].to_f, game[:draw].to_f + game[:away].to_f, game[:home].to_f + game[:away].to_f,
+        game[:over15], game[:under15], game[:over25], game[:under25], game[:over35], game[:under35],
+        game[:gg], game[:missing_xgs], game[:both_cards], game[:score],
+        game[:bet1], game[:betx], game[:bet2],
+        game[:bet_o15], game[:bet_u15], game[:bet_o25], game[:bet_u25], game[:bet_o35], game[:bet_u35],
+        game[:bet_gg], game[:bet_ng],
+        game[:home_edge], game[:draw_edge], game[:away_edge],
+        game[:o15_edge], game[:u15_edge], game[:o25_edge], game[:u25_edge], game[:o35_edge], game[:u35_edge],
+        game[:gg_edge], game[:ng_edge],
+        game[:home_kelly], game[:draw_kelly], game[:away_kelly],
+        game[:o15_kelly], game[:u15_kelly], game[:o25_kelly], game[:u25_kelly], game[:o35_kelly], game[:u35_kelly],
+        game[:gg_kelly], game[:ng_kelly]
+      ]
     end
   end;0
 end
@@ -313,9 +339,20 @@ end
 
 def build_proposals(predicted_lineups = {})
   games = import_from_csv
-  skip_cols = ['Missing XGS', 'Home', 'Away', 'Score', 'Bet1', 'BetX', 'Bet2', 'Edge1', 'EdgeX', 'Edge2', 'Kelly1', 'KellyX', 'Kelly2']
-  edge_col  = { '1' => 'Edge1',  'X' => 'EdgeX',  '2' => 'Edge2'  }
-  kelly_col = { '1' => 'Kelly1', 'X' => 'KellyX', '2' => 'Kelly2' }
+  skip_cols = ['Missing XGS', 'Home', 'Away', 'Score',
+               'Bet1', 'BetX', 'Bet2', 'BetO15', 'BetU15', 'BetO25', 'BetU25', 'BetO35', 'BetU35', 'BetGG', 'BetNG',
+               'Edge1', 'EdgeX', 'Edge2', 'EdgeO15', 'EdgeU15', 'EdgeO25', 'EdgeU25', 'EdgeO35', 'EdgeU35', 'EdgeGG', 'EdgeNG',
+               'Kelly1', 'KellyX', 'Kelly2', 'KellyO15', 'KellyU15', 'KellyO25', 'KellyU25', 'KellyO35', 'KellyU35', 'KellyGG', 'KellyNG']
+  edge_col  = { '1' => 'Edge1', 'X' => 'EdgeX', '2' => 'Edge2',
+                'O15' => 'EdgeO15', 'U15' => 'EdgeU15',
+                'O25' => 'EdgeO25', 'U25' => 'EdgeU25',
+                'O35' => 'EdgeO35', 'U35' => 'EdgeU35',
+                'GG'  => 'EdgeGG',  'NG'  => 'EdgeNG' }
+  kelly_col = { '1' => 'Kelly1', 'X' => 'KellyX', '2' => 'Kelly2',
+                'O15' => 'KellyO15', 'U15' => 'KellyU15',
+                'O25' => 'KellyO25', 'U25' => 'KellyU25',
+                'O35' => 'KellyO35', 'U35' => 'KellyU35',
+                'GG'  => 'KellyGG',  'NG'  => 'KellyNG' }
 
   by_match = {}
   games.each { |g| by_match["#{g['Home']}-#{g['Away']}"] = g }
@@ -331,18 +368,19 @@ def build_proposals(predicted_lineups = {})
       bets << { name: k, prob: v.to_f, tags: [:threshold] } if v.to_f >= threshold[:value]
     end
 
-    # Edge-based exceptional bucket: 1/X/2 markets where bookmaker misprices by
+    # Edge-based exceptional bucket: any market where the bookmaker misprices by
     # more than EDGE_EXCEPTION_THRESHOLD regardless of raw probability threshold.
-    { '1' => 'Edge1', 'X' => 'EdgeX', '2' => 'Edge2' }.each do |market, ecol|
-      next unless g[ecol]
+    # 'NG' has no sim column — its probability is derived as 100 - GG.
+    edge_col.each do |market, ecol|
+      next unless g[ecol] && g[ecol].to_f != 0
       edge = g[ecol].to_f
       next if edge.abs < EDGE_EXCEPTION_THRESHOLD
       existing = bets.find { |b| b[:name] == market }
       if existing
         existing[:tags] << :edge
       else
-        prob_col = { '1' => '1', 'X' => 'X', '2' => '2' }[market]
-        bets << { name: market, prob: g[prob_col].to_f, tags: [:edge] }
+        prob = market == 'NG' ? (100 - g['GG'].to_f) : g[market].to_f
+        bets << { name: market, prob: prob, tags: [:edge] }
       end
     end
 
@@ -399,6 +437,16 @@ end
 def print_proposals(predicted_lineups = {})
   body = build_proposals(predicted_lineups)
   puts body unless body.empty?
+end
+
+# Returns [edge, kelly] for a market. Returns [nil, nil] if odds are missing/invalid.
+# sim_pct is 0–100, odds is decimal (e.g. 2.50).
+def market_edge_kelly(sim_pct, odds)
+  return [nil, nil] unless odds.to_f > 1
+  prob  = sim_pct / 100.0
+  edge  = (prob - (1.0 / odds)).round(4)
+  kelly = edge > 0 ? (edge / (odds - 1)).round(4) : 0
+  [edge, kelly]
 end
 
 GMAIL_ADDRESS = 'marky.rigas@gmail.com'.freeze
@@ -551,7 +599,7 @@ begin
   if ARGV.count < 3
     ids = read_index_file
 
-    date_str = Date.tomorrow.strftime("%Y%m%d")
+    date_str = Date.today.strftime("%Y%m%d")
     matches = games("https://www.whoscored.com/livescores/data?d=#{date_str}&isSummary=false")
 
     matches.each do |m|
@@ -577,21 +625,35 @@ begin
       next unless match_xgs
 
       sim = simulate_match(NAMES_MAP[m[:home]] || m[:home], NAMES_MAP[m[:away]] || m[:away], match_xgs)
-      if sim && m[:bet1].to_f > 1 && m[:betx].to_f > 1 && m[:bet2].to_f > 1
-        home_edge = (sim[:home] / 100.0) - (1.0 / m[:bet1])
-        draw_edge = (sim[:draw] / 100.0) - (1.0 / m[:betx])
-        away_edge = (sim[:away] / 100.0) - (1.0 / m[:bet2])
+      next unless sim
+
+      if m[:bet1].to_f > 1 && m[:betx].to_f > 1 && m[:bet2].to_f > 1
+        home_edge, home_kelly = market_edge_kelly(sim[:home], m[:bet1])
+        draw_edge, draw_kelly = market_edge_kelly(sim[:draw], m[:betx])
+        away_edge, away_kelly = market_edge_kelly(sim[:away], m[:bet2])
         sim.merge!(
           bet1: m[:bet1], betx: m[:betx], bet2: m[:bet2],
-          home_edge: home_edge.round(4),
-          draw_edge: draw_edge.round(4),
-          away_edge: away_edge.round(4),
-          home_kelly: home_edge > 0 ? (home_edge / (m[:bet1] - 1)).round(4) : 0,
-          draw_kelly: draw_edge > 0 ? (draw_edge / (m[:betx] - 1)).round(4) : 0,
-          away_kelly: away_edge > 0 ? (away_edge / (m[:bet2] - 1)).round(4) : 0
+          home_edge: home_edge, draw_edge: draw_edge, away_edge: away_edge,
+          home_kelly: home_kelly || 0, draw_kelly: draw_kelly || 0, away_kelly: away_kelly || 0
         )
       end
-      next unless sim
+
+      # Edge/Kelly for additional markets (computed independently of 1/X/2 odds)
+      {
+        o15: [sim[:over15],          m[:bet_o15]],
+        u15: [sim[:under15],         m[:bet_u15]],
+        o25: [sim[:over25],          m[:bet_o25]],
+        u25: [sim[:under25],         m[:bet_u25]],
+        o35: [sim[:over35],          m[:bet_o35]],
+        u35: [sim[:under35],         m[:bet_u35]],
+        gg:  [sim[:gg],              m[:bet_gg]],
+        ng:  [100.0 - sim[:gg],      m[:bet_ng]]
+      }.each do |mkt, (sim_pct, odds)|
+        edge, kelly = market_edge_kelly(sim_pct, odds)
+        sim[:"bet_#{mkt}"]   = odds.to_f > 1 ? odds : nil
+        sim[:"#{mkt}_edge"]  = edge
+        sim[:"#{mkt}_kelly"] = kelly || 0
+      end
 
       results << sim
       write_to_index_file(m[:id])
