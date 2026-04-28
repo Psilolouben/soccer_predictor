@@ -36,11 +36,6 @@ THRESHOLDS = {
 # its THRESHOLD but where the bookmaker is significantly mispricing the outcome.
 EDGE_EXCEPTION_THRESHOLD = 0.10
 
-# Home advantage: home team gets +10% shot volume, away team gets -10%.
-# Applied to avg_shots in simulate_match. xg_per_shot is unchanged.
-# Note: neutral venue matches will still receive this adjustment.
-HOME_ADVANTAGE_FACTOR  = 1.10
-AWAY_DISADVANTAGE_FACTOR = 0.90
 
 NAMES_MAP = {
   'Wolves' => 'Wolverhampton_Wanderers',
@@ -221,8 +216,8 @@ def xgs_new(home_team, away_team, home_id, away_id, starting_eleven, competition
       'user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
     ]
   }
-  home_url = "https://www.whoscored.com/StatisticsFeed/1/GetPlayerStatistics?category=xg-stats&subcategory=summary&statsAccumulationType=0&tournamentOptions=#{competition_id}&isCurrent=true&playerId=&teamIds=#{home_id}&sortBy=xg&sortAscending=false&field=Overall&isMinApp=false&page=&includeZeroValues=true&numberOfPlayersToPick=&incPens=true"
-  away_url = "https://www.whoscored.com/StatisticsFeed/1/GetPlayerStatistics?category=xg-stats&subcategory=summary&statsAccumulationType=0&tournamentOptions=#{competition_id}&isCurrent=true&playerId=&teamIds=#{away_id}&sortBy=xg&sortAscending=false&field=Overall&isMinApp=false&page=&includeZeroValues=true&numberOfPlayersToPick=&incPens=true"
+  home_url = "https://www.whoscored.com/StatisticsFeed/1/GetPlayerStatistics?category=xg-stats&subcategory=summary&statsAccumulationType=0&tournamentOptions=#{competition_id}&isCurrent=true&playerId=&teamIds=#{home_id}&sortBy=xg&sortAscending=false&field=Home&isMinApp=false&page=&includeZeroValues=true&numberOfPlayersToPick=&incPens=true"
+  away_url = "https://www.whoscored.com/StatisticsFeed/1/GetPlayerStatistics?category=xg-stats&subcategory=summary&statsAccumulationType=0&tournamentOptions=#{competition_id}&isCurrent=true&playerId=&teamIds=#{away_id}&sortBy=xg&sortAscending=false&field=Away&isMinApp=false&page=&includeZeroValues=true&numberOfPlayersToPick=&incPens=true"
   home_team_url = "https://www.whoscored.com/Teams/#{home_id}/Show"
   away_team_url = "https://www.whoscored.com/Teams/#{away_id}/Show"
   puts 'Fetching home xGs...'
@@ -239,7 +234,7 @@ def xgs_new(home_team, away_team, home_id, away_id, starting_eleven, competition
   xgs_warning = true if home_xgs.count{ |_,v| v == 0} > 2
   return if home_xgs.values.all?{|x| x == [0,0]}
 
-  home_cards_url = "https://www.whoscored.com/StatisticsFeed/1/GetPlayerStatistics?category=summary&subcategory=all&statsAccumulationType=0&isCurrent=true&playerId=&teamIds=#{home_id}&matchId=&stageId=&tournamentOptions=#{competition_id}&sortBy=Rating&sortAscending=&age=&ageComparisonType=&appearances=&appearancesComparisonType=&field=Overall&nationality=&positionOptions=&timeOfTheGameEnd=&timeOfTheGameStart=&isMinApp=false&page=&includeZeroValues=true&numberOfPlayersToPick=&incPens="
+  home_cards_url = "https://www.whoscored.com/StatisticsFeed/1/GetPlayerStatistics?category=summary&subcategory=all&statsAccumulationType=0&isCurrent=true&playerId=&teamIds=#{home_id}&matchId=&stageId=&tournamentOptions=#{competition_id}&sortBy=Rating&sortAscending=&age=&ageComparisonType=&appearances=&appearancesComparisonType=&field=Home&nationality=&positionOptions=&timeOfTheGameEnd=&timeOfTheGameStart=&isMinApp=false&page=&includeZeroValues=true&numberOfPlayersToPick=&incPens="
   @br.goto(home_cards_url)
   puts 'Fetching home cards...'
 
@@ -263,7 +258,7 @@ def xgs_new(home_team, away_team, home_id, away_id, starting_eleven, competition
   xgs_warning = true if away_xgs.count{ |_,v| v == 0} > 2
   return if away_xgs.values.all?{|x| x == [0,0]}
 
-  away_cards_url = "https://www.whoscored.com/StatisticsFeed/1/GetPlayerStatistics?category=summary&subcategory=all&statsAccumulationType=0&isCurrent=true&playerId=&teamIds=#{away_id}&matchId=&stageId=&tournamentOptions=#{competition_id}&sortBy=Rating&sortAscending=&age=&ageComparisonType=&appearances=&appearancesComparisonType=&field=Overall&nationality=&positionOptions=&timeOfTheGameEnd=&timeOfTheGameStart=&isMinApp=false&page=&includeZeroValues=true&numberOfPlayersToPick=&incPens="
+  away_cards_url = "https://www.whoscored.com/StatisticsFeed/1/GetPlayerStatistics?category=summary&subcategory=all&statsAccumulationType=0&isCurrent=true&playerId=&teamIds=#{away_id}&matchId=&stageId=&tournamentOptions=#{competition_id}&sortBy=Rating&sortAscending=&age=&ageComparisonType=&appearances=&appearancesComparisonType=&field=Away&nationality=&positionOptions=&timeOfTheGameEnd=&timeOfTheGameStart=&isMinApp=false&page=&includeZeroValues=true&numberOfPlayersToPick=&incPens="
   puts 'Fetching away cards...'
 
   @br.goto(away_cards_url)
@@ -468,12 +463,12 @@ def simulate_match(home_team, away_team, stats)
 
   NUMBER_OF_SIMULATIONS.times do
     home_xg_stats = stats[:home_xgs].transform_values do |(xg_per_shot, avg_shots)|
-      shots = Distribution::Poisson.rng(avg_shots * HOME_ADVANTAGE_FACTOR)
+      shots = Distribution::Poisson.rng(avg_shots)
       goals = Array.new(shots) { rand < xg_per_shot ? 1 : 0 }.sum
       goals
     end.select { |_, goals| goals > 0 }
     away_xg_stats = stats[:away_xgs].transform_values do |(xg_per_shot, avg_shots)|
-      shots = Distribution::Poisson.rng(avg_shots * AWAY_DISADVANTAGE_FACTOR)
+      shots = Distribution::Poisson.rng(avg_shots)
       goals = Array.new(shots) { rand < xg_per_shot ? 1 : 0 }.sum
       goals
     end.select { |_, goals| goals > 0 }

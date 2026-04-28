@@ -12,6 +12,14 @@ CSV for betting analysis.
 - `xg_script_greece.rb` — lighter variant using team-level xG (not per-player),
   used for Greek Super League
 
+## Simulation accuracy notes
+- **Home/away xG split**: `xgs_new` fetches `field=Home` stats for the home team and
+  `field=Away` for the away team, so shot volumes and xG quality already reflect
+  venue-specific performance. No separate multiplier is applied.
+- **Predicted XI flag**: when `starting_eleven` returns nil and `predicted_eleven` is
+  used as fallback, a `[PREDICTED XI]` tag appears in the printed output next to the
+  match header. Treat those proposals with extra caution.
+
 ## Key architecture decisions
 - **Always headless**: All Watir browsers must use `:chrome, options: { args: ['--headless=new', ...] }`.
   All Puppeteer launches must use `headless: true`. Never leave either as the default
