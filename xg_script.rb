@@ -208,7 +208,7 @@ def goal_and_assist(goal, assist)
   (goal + assist - (goal * assist)) * 100
 end
 
-def xgs_new(home_team, away_team, home_id, away_id, starting_eleven, competition_id)
+def xgs_new(home_team, away_team, home_id, away_id, starting_eleven, competition_id, predicted_lineup = false)
   @br = Watir::Browser.new :chrome, options: {
     args: [
       '--headless=new',
@@ -281,7 +281,8 @@ def xgs_new(home_team, away_team, home_id, away_id, starting_eleven, competition
     away_xgs: away_xgs,
     xgs_warning: xgs_warning,
     home_cards: home_cards,
-    away_cards: away_cards
+    away_cards: away_cards,
+    predicted_lineup: predicted_lineup
   }
   stats
 rescue => e
@@ -315,7 +316,7 @@ def import_from_csv
   CSV.read("bet_proposals.csv", headers: true, col_sep: ';').map(&:to_h)
 end
 
-def build_proposals
+def build_proposals(predicted_lineups = {})
   games = import_from_csv
   skip_cols = ['Missing XGS', 'Home', 'Away', 'Score', 'Bet1', 'BetX', 'Bet2', 'Edge1', 'EdgeX', 'Edge2', 'Kelly1', 'KellyX', 'Kelly2']
   edge_col  = { '1' => 'Edge1',  'X' => 'EdgeX',  '2' => 'Edge2'  }
@@ -369,7 +370,9 @@ def build_proposals
     odds_str = odds.map { |o| o > 0 ? format('%.2f', o) : '-' }.join(' / ')
 
     lines << sep
+    match_key = "#{g['Home']}-#{g['Away']}"
     header = "#{g['Home']} vs #{g['Away']}"
+    header += '  [PREDICTED XI]' if predicted_lineups[match_key]
     lines << "#{header.ljust(38)}  #{score_str}"
     lines << "  Odds: #{odds_str}"
     bets.each do |bet|
@@ -398,8 +401,8 @@ def build_proposals
   lines.join("\n")
 end
 
-def print_proposals
-  body = build_proposals
+def print_proposals(predicted_lineups = {})
+  body = build_proposals(predicted_lineups)
   puts body unless body.empty?
 end
 
@@ -437,6 +440,7 @@ def simulate_match(home_team, away_team, stats)
     home_team: home_team,
     away_team: away_team,
     missing_xgs: stats[:xgs_warning],
+    predicted_lineup: stats[:predicted_lineup],
     home: 0,
     draw: 0,
     away: 0,
@@ -534,7 +538,7 @@ def simulate_match(home_team, away_team, stats)
   #res[:away_scorers] = away_scorers.flatten.tally.transform_values{|x| x / (NUMBER_OF_SIMULATIONS / 100).to_f}
   res[:score] = scores.tally.transform_values{|v| v/(NUMBER_OF_SIMULATIONS.to_f / 100)}.sort_by{|_, v| v}.reverse.first.join(':')
 
-  return res.merge(res.except(:home_team, :away_team, :missing_xgs, :home_scorers, :away_scorers, :score).transform_values{ |v| v / (NUMBER_OF_SIMULATIONS / 100.0) })
+  return res.merge(res.except(:home_team, :away_team, :missing_xgs, :predicted_lineup, :home_scorers, :away_scorers, :score).transform_values{ |v| v / (NUMBER_OF_SIMULATIONS / 100.0) })
 rescue => e
   #binding.pry
 end
@@ -561,13 +565,18 @@ begin
 
       puts "#{NAMES_MAP[m[:home]] || m[:home]} - #{NAMES_MAP[m[:away]] || m[:away]}"
 
+      lineup = ARGV[2] || starting_eleven(m[:lineup_url])
+      predicted = lineup.nil?
+      lineup ||= predicted_eleven(m[:url])
+
       match_xgs = xgs_new(
         (NAMES_MAP[m[:home]] || m[:home]).split(' ').join('_'),
         (NAMES_MAP[m[:away]] || m[:away]).split(' ').join('_'),
         m[:home_id],
         m[:away_id],
-        ARGV[2] || starting_eleven(m[:lineup_url]) || predicted_eleven( m[:url]),
-        m[:tournament_id]
+        lineup,
+        m[:tournament_id],
+        predicted
       )
       #binding.pry
       next unless match_xgs
@@ -602,9 +611,12 @@ begin
   end
 ensure
   export_to_csv(results)
-  print_proposals
+  predicted_lineups = results.each_with_object({}) do |r, h|
+    h["#{r[:home_team]}-#{r[:away_team]}"] = true if r[:predicted_lineup]
+  end
+  print_proposals(predicted_lineups)
   if results.any?
-    body = build_proposals
+    body = build_proposals(predicted_lineups)
     send_proposals_email(body) unless body.empty?
   end
 end
