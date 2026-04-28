@@ -51,6 +51,28 @@ Used by `print_proposals` to flag eligible bets. Column indices map to:
 
 Columns for Score, Bet1/BetX/Bet2, Edge*, Kelly* are skipped in threshold checks.
 
+## Edge-based exceptional bucket
+`build_proposals` / `print_proposals` must surface a second class of bet: cases where the
+bookmaker odds are significantly **mispricing** the simulation output, even when the raw
+simulated probability does not meet the standard THRESHOLD.
+
+**Rule**: for the 1/X/2 markets (the only ones with Edge/Kelly columns), also include the
+bet if:
+- `edge > EDGE_EXCEPTION_THRESHOLD` (bookmaker underestimates — value bet), OR
+- `edge < -EDGE_EXCEPTION_THRESHOLD` (bookmaker overestimates — the outcome is much less
+  likely than the odds imply; flag as a "lay / fade" signal)
+
+`EDGE_EXCEPTION_THRESHOLD = 0.10` (i.e. ±10 percentage points) is the suggested default.
+
+These rows must be clearly labeled in the printed output (e.g. `[EDGE]` tag) so they are
+visually distinct from threshold-passing bets. A bet that qualifies on *both* grounds
+(threshold AND edge) should be printed once with both tags.
+
+**Why this matters**: a 55% home-win probability misses the 60% SINGLE_THRESHOLD, but if
+the bookmaker prices it at 2.50 (implied 40%), the +15 pp edge is actionable regardless.
+Conversely, a draw at 25% that a bookmaker prices at 1.80 (implied 56%) is a strong fade
+signal even though 25% is below the 35% DRAW_THRESHOLD.
+
 ## Available leagues (AVAILABLE_LEAGUES)
 Keyed by WhoScored tournament ID. Championship (id 7) is currently commented out.
 

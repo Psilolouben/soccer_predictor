@@ -32,6 +32,10 @@ THRESHOLDS = {
   SCORER_THRESHOLD: { index: [-1], value: 60 }
 }
 
+# Minimum absolute edge (sim prob − implied prob) to surface a bet that misses
+# its THRESHOLD but where the bookmaker is significantly mispricing the outcome.
+EDGE_EXCEPTION_THRESHOLD = 0.10
+
 NAMES_MAP = {
   'Wolves' => 'Wolverhampton_Wanderers',
   'Newcastle' => 'Newcastle_United',
@@ -322,8 +326,24 @@ def build_proposals
       next if skip_cols.include?(k)
       threshold = THRESHOLDS.select { |_, t| t[:index].include?(i) }.values.first
       next unless threshold
-      bets << { name: k, prob: v.to_f } if v.to_f >= threshold[:value]
+      bets << { name: k, prob: v.to_f, tags: [:threshold] } if v.to_f >= threshold[:value]
     end
+
+    # Edge-based exceptional bucket: 1/X/2 markets where bookmaker misprices by
+    # more than EDGE_EXCEPTION_THRESHOLD regardless of raw probability threshold.
+    { '1' => 'Edge1', 'X' => 'EdgeX', '2' => 'Edge2' }.each do |market, ecol|
+      next unless g[ecol]
+      edge = g[ecol].to_f
+      next if edge.abs < EDGE_EXCEPTION_THRESHOLD
+      existing = bets.find { |b| b[:name] == market }
+      if existing
+        existing[:tags] << :edge
+      else
+        prob_col = { '1' => '1', 'X' => 'X', '2' => '2' }[market]
+        bets << { name: market, prob: g[prob_col].to_f, tags: [:edge] }
+      end
+    end
+
     next if bets.empty?
 
     { g: g, bets: bets }
@@ -352,8 +372,19 @@ def build_proposals
       edge  = ek ? g[ek].to_f : nil
       kelly = kk ? g[kk].to_f : nil
 
-      line = format('  %-16s %5.1f%%', bet[:name], bet[:prob])
-      line += format('   edge +%.2f%%   kelly %.2f%%', edge * 100, kelly * 100) if edge && edge > 0
+      tag_str = bet[:tags].map { |t|
+        case t
+        when :threshold then '[T]'
+        when :edge      then edge && edge < 0 ? '[FADE]' : '[EDGE]'
+        end
+      }.join(' ')
+
+      line = format('  %-8s %-10s %5.1f%%', tag_str, bet[:name], bet[:prob])
+      if edge && edge != 0
+        sign = edge > 0 ? '+' : ''
+        line += format('   edge %s%.2f%%', sign, edge * 100)
+        line += format('   kelly %.2f%%', kelly * 100) if kelly && kelly > 0
+      end
       lines << line
     end
   end
@@ -504,6 +535,12 @@ end
 
 begin
   Selenium::WebDriver.logger.level = :error
+
+  if ARGV.include?('--reset-index')
+    File.write('index.txt', '')
+    File.delete('bet_proposals.csv') if File.exist?('bet_proposals.csv')
+    puts "index.txt and bet_proposals.csv reset"
+  end
 
   results = []
   if ARGV.count < 3
