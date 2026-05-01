@@ -98,7 +98,7 @@ def games(url)
   @br.goto(url)
 
   a = JSON.parse(@br.elements.first.text)['tournaments'].
-    select { |x| AVAILABLE_LEAGUES.keys.include?(x['tournamentId'])}.
+    select { |x| ARGV.include?('--all-leagues') || AVAILABLE_LEAGUES.keys.include?(x['tournamentId'])}.
     map { |x| x['matches'].map do |g|
       next if DateTime.now > DateTime.parse(g['startTime']).utc
 
