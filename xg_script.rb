@@ -587,6 +587,23 @@ rescue => e
 end
 
 begin
+  if ARGV.include?('--help')
+    puts <<~HELP
+      Usage: ruby xg_script.rb [options] [HOME AWAY LINEUP_URL]
+
+      Options:
+        --help          Show this help message and exit
+        --reset-index   Clear index.txt and delete bet_proposals.csv, then continue
+        --all-leagues   Fetch all leagues from WhoScored, ignoring AVAILABLE_LEAGUES filter
+
+      Positional arguments (optional):
+        HOME            Home team name (runs a single match instead of today's fixtures)
+        AWAY            Away team name
+        LINEUP_URL      WhoScored lineups URL for the match
+    HELP
+    exit
+  end
+
   Selenium::WebDriver.logger.level = :error
 
   if ARGV.include?('--reset-index')
