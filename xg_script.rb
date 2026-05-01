@@ -587,6 +587,7 @@ rescue => e
 end
 
 begin
+  results = []
   if ARGV.include?('--help')
     puts <<~HELP
       Usage: ruby xg_script.rb [options] [HOME AWAY LINEUP_URL]
@@ -601,7 +602,7 @@ begin
         AWAY            Away team name
         LINEUP_URL      WhoScored lineups URL for the match
     HELP
-    exit
+    exit!
   end
 
   Selenium::WebDriver.logger.level = :error
@@ -612,7 +613,6 @@ begin
     puts "index.txt and bet_proposals.csv reset"
   end
 
-  results = []
   if ARGV.count < 3
     ids = read_index_file
 
