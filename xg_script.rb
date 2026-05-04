@@ -451,6 +451,79 @@ end
 
 GMAIL_ADDRESS = 'marky.rigas@gmail.com'.freeze
 
+def format_results_for_prompt(results)
+  lines = []
+  results.each do |r|
+    lines << "#{r[:home_team]} vs #{r[:away_team]}#{r[:predicted_lineup] ? ' [PREDICTED XI]' : ''}"
+    lines << "  1/X/2: #{r[:home].round(1)}% / #{r[:draw].round(1)}% / #{r[:away].round(1)}%"
+    lines << "  O1.5/O2.5/O3.5: #{r[:over15].round(1)}% / #{r[:over25].round(1)}% / #{r[:over35].round(1)}%"
+    lines << "  GG: #{r[:gg].round(1)}%   Both Cards: #{r[:both_cards].round(1)}%   Most likely score: #{r[:score]}"
+    lines << "  Missing XGS: #{r[:missing_xgs]}"
+
+    odds_parts = []
+    odds_parts << "1=#{r[:bet1]}" if r[:bet1].to_f > 1
+    odds_parts << "X=#{r[:betx]}" if r[:betx].to_f > 1
+    odds_parts << "2=#{r[:bet2]}" if r[:bet2].to_f > 1
+    odds_parts << "O1.5=#{r[:bet_o15]}" if r[:bet_o15].to_f > 1
+    odds_parts << "U1.5=#{r[:bet_u15]}" if r[:bet_u15].to_f > 1
+    odds_parts << "O2.5=#{r[:bet_o25]}" if r[:bet_o25].to_f > 1
+    odds_parts << "U2.5=#{r[:bet_u25]}" if r[:bet_u25].to_f > 1
+    odds_parts << "O3.5=#{r[:bet_o35]}" if r[:bet_o35].to_f > 1
+    odds_parts << "U3.5=#{r[:bet_u35]}" if r[:bet_u35].to_f > 1
+    odds_parts << "GG=#{r[:bet_gg]}"    if r[:bet_gg].to_f > 1
+    odds_parts << "NG=#{r[:bet_ng]}"    if r[:bet_ng].to_f > 1
+    lines << "  Odds: #{odds_parts.join('  ')}" unless odds_parts.empty?
+
+    edge_parts = []
+    edge_parts << "1=#{(r[:home_edge]*100).round(1)}pp"  if r[:home_edge]
+    edge_parts << "X=#{(r[:draw_edge]*100).round(1)}pp"  if r[:draw_edge]
+    edge_parts << "2=#{(r[:away_edge]*100).round(1)}pp"  if r[:away_edge]
+    edge_parts << "O2.5=#{(r[:o25_edge]*100).round(1)}pp" if r[:o25_edge]
+    edge_parts << "GG=#{(r[:gg_edge]*100).round(1)}pp"   if r[:gg_edge]
+    lines << "  Edge: #{edge_parts.join('  ')}" unless edge_parts.empty?
+
+    kelly_parts = []
+    kelly_parts << "1=#{(r[:home_kelly]*100).round(2)}%"  if r[:home_kelly].to_f > 0
+    kelly_parts << "X=#{(r[:draw_kelly]*100).round(2)}%"  if r[:draw_kelly].to_f > 0
+    kelly_parts << "2=#{(r[:away_kelly]*100).round(2)}%"  if r[:away_kelly].to_f > 0
+    kelly_parts << "O2.5=#{(r[:o25_kelly]*100).round(2)}%" if r[:o25_kelly].to_f > 0
+    kelly_parts << "GG=#{(r[:gg_kelly]*100).round(2)}%"   if r[:gg_kelly].to_f > 0
+    lines << "  Kelly: #{kelly_parts.join('  ')}" unless kelly_parts.empty?
+
+    lines << ''
+  end
+  lines.join("\n")
+end
+
+def ask_claude_for_tips(n_tips, results)
+  return if results.empty?
+
+  sim_data = format_results_for_prompt(results)
+
+  template = File.read(File.join(__dir__, 'prompts/tips_prompt.md'))
+  prompt = template
+    .gsub('{{N_TIPS}}',    n_tips.to_s)
+    .gsub('{{SIM_DATA}}',  sim_data)
+
+  puts "\nAsking Claude for top #{n_tips} tips..."
+  output = IO.popen(['claude', '-p', prompt], err: :close, &:read)
+
+  if $?.success? && !output.strip.empty?
+    sep = '═' * 56
+    puts "\n#{sep}"
+    puts "  AI TIPS (Top #{n_tips})"
+    puts sep
+    puts output.strip
+    puts sep
+  else
+    puts "Claude CLI returned no output. Is `claude` installed and logged in?"
+  end
+rescue Errno::ENOENT
+  puts "`claude` CLI not found in PATH — skipping tips"
+rescue => e
+  puts "Tips failed: #{e.message}"
+end
+
 def send_proposals_email(body)
   password = ENV['GMAIL_APP_PASSWORD']
   unless password
@@ -596,6 +669,7 @@ begin
         --help          Show this help message and exit
         --reset-index   Clear index.txt and delete bet_proposals.csv, then continue
         --all-leagues   Fetch all leagues from WhoScored, ignoring AVAILABLE_LEAGUES filter
+        --tips N        After simulation, ask Claude to pick the top N tips (requires ANTHROPIC_API_KEY)
 
       Positional arguments (optional):
         HOME            Home team name (runs a single match instead of today's fixtures)
@@ -613,7 +687,9 @@ begin
     puts "index.txt and bet_proposals.csv reset"
   end
 
-  if ARGV.count < 3
+  positional_args = ARGV.reject { |a| a.start_with?('--') || a =~ /^\d+$/ }
+
+  if positional_args.count < 3
     ids = read_index_file
 
     date_str = Date.today.strftime("%Y%m%d")
@@ -625,7 +701,7 @@ begin
 
       puts "#{NAMES_MAP[m[:home]] || m[:home]} - #{NAMES_MAP[m[:away]] || m[:away]}"
 
-      lineup = ARGV[2] || starting_eleven(m[:lineup_url])
+      lineup = positional_args[2] || starting_eleven(m[:lineup_url])
       predicted = lineup.nil?
       lineup ||= predicted_eleven(m[:url])
 
@@ -679,9 +755,9 @@ begin
     end
 
   else
-    puts "#{ARGV[0]} - #{ARGV[1]}"
-    stats = xgs(ARGV[0], ARGV[1], starting_eleven(ARGV[2]))
-    simulate_match(ARGV[0], ARGV[1], stats)
+    puts "#{positional_args[0]} - #{positional_args[1]}"
+    stats = xgs_new(positional_args[0], positional_args[1], starting_eleven(positional_args[2]))
+    simulate_match(positional_args[0], positional_args[1], stats)
   end
 ensure
   export_to_csv(results)
@@ -692,5 +768,12 @@ ensure
   if results.any?
     body = build_proposals(predicted_lineups)
     send_proposals_email(body) unless body.empty?
+  end
+
+  tips_idx = ARGV.index('--tips')
+  if tips_idx
+    n_tips = ARGV[tips_idx + 1].to_i
+    n_tips = 5 if n_tips < 1
+    ask_claude_for_tips(n_tips, results)
   end
 end
