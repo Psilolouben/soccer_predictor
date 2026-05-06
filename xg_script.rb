@@ -36,6 +36,21 @@ THRESHOLDS = {
 # its THRESHOLD but where the bookmaker is significantly mispricing the outcome.
 EDGE_EXCEPTION_THRESHOLD = 0.10
 
+# Per-player proposal thresholds
+PLAYER_SCORER_THRESHOLD = 40.0  # anytime goalscorer: show if ≥40% probability
+PLAYER_CARD_THRESHOLD   = 35.0  # player yellow card: show if ≥35% probability
+
+# Half-time simulation: fraction of each team's expected goals that fall in HT.
+# ~45% is well-supported by top-flight historical averages.
+HT_GOAL_FACTOR = 0.45
+
+# Half-time proposal thresholds
+HT_SINGLE_THRESHOLD = 50.0
+HT_DRAW_THRESHOLD   = 40.0
+HT_OVER05_THRESHOLD = 70.0
+HT_OVER15_THRESHOLD = 55.0
+HT_GG_THRESHOLD     = 55.0
+
 
 NAMES_MAP = {
   'Wolves' => 'Wolverhampton_Wanderers',
@@ -49,7 +64,7 @@ NAMES_MAP = {
   'Deportivo Alaves' => 'Alaves'
 }
 
-NUMBER_OF_SIMULATIONS = 100_000
+NUMBER_OF_SIMULATIONS = 100_00
 
 def slugify(str)
   ActiveSupport::Inflector.transliterate(str.to_s).downcase.gsub(/[^a-z0-9]+/, '-').gsub(/^-+|-+$/, '')
@@ -121,8 +136,11 @@ def games(url)
         bet_u25: g.dig('bets', 'under25', 'offers')&.first{|m| m['bettingProvider'] == 'B3'}&.dig('oddsDecimal')&.to_f,
         bet_o35: g.dig('bets', 'over35',  'offers')&.first{|m| m['bettingProvider'] == 'B3'}&.dig('oddsDecimal')&.to_f,
         bet_u35: g.dig('bets', 'under35', 'offers')&.first{|m| m['bettingProvider'] == 'B3'}&.dig('oddsDecimal')&.to_f,
-        bet_gg:  g.dig('bets', 'gg',      'offers')&.first{|m| m['bettingProvider'] == 'B3'}&.dig('oddsDecimal')&.to_f,
-        bet_ng:  g.dig('bets', 'ng',      'offers')&.first{|m| m['bettingProvider'] == 'B3'}&.dig('oddsDecimal')&.to_f
+        bet_gg:   g.dig('bets', 'gg',      'offers')&.first{|m| m['bettingProvider'] == 'B3'}&.dig('oddsDecimal')&.to_f,
+        bet_ng:   g.dig('bets', 'ng',      'offers')&.first{|m| m['bettingProvider'] == 'B3'}&.dig('oddsDecimal')&.to_f,
+        bet_ht1:  g.dig('bets', 'htWin',   'offers')&.first{|m| m['bettingProvider'] == 'B3'}&.dig('oddsDecimal')&.to_f,
+        bet_htx:  g.dig('bets', 'htDraw',  'offers')&.first{|m| m['bettingProvider'] == 'B3'}&.dig('oddsDecimal')&.to_f,
+        bet_ht2:  g.dig('bets', 'htAway',  'offers')&.first{|m| m['bettingProvider'] == 'B3'}&.dig('oddsDecimal')&.to_f
       }
     end
   }.flatten.compact
@@ -211,6 +229,56 @@ def goal_and_assist(goal, assist)
   (goal + assist - (goal * assist)) * 100
 end
 
+# Scrapes corners/game and offsides/game for a team from their WhoScored HTML page.
+# Returns [corners_pg, offsides_pg] as floats (0.0 on failure).
+# With --discover-team-html: dumps page HTML sections to help identify selectors.
+def scrape_team_corner_offside_stats(team_url, team_id, competition_id)
+  @br.goto(team_url)
+  sleep(3)  # allow JS to render
+
+  if ARGV.include?('--discover-team-html')
+    base_path = File.join(__dir__, "team_html_#{team_id}_base.txt")
+    File.write(base_path, @br.html)
+    puts "Base page HTML written to #{base_path}"
+  end
+
+  offsides_pg = 0.0
+
+  # Offsides are in the Defensive tab (data-stat-name="offsideGivenPerGame").
+  # Corners are not available anywhere in WhoScored team stats.
+  tab_link = @br.link(text: 'Defensive')
+  if ARGV.include?('--discover-team-html')
+    puts "Tab 'defensive' exists: #{tab_link.exists?}"
+  end
+
+  if tab_link.exists?
+    @br.execute_script("document.querySelector(\"a[href='#top-team-stats-defensive']\").click()")
+    sleep(2)
+
+    if ARGV.include?('--discover-team-html')
+      out_path = File.join(__dir__, "team_html_#{team_id}_defensive.txt")
+      File.write(out_path, @br.html)
+      puts "Defensive tab HTML written to #{out_path}"
+    end
+
+    doc   = Nokogiri::HTML(@br.html)
+    table = doc.at_css('#statistics-team-table-defensive table')
+    if table
+      # Prefer the row matching competition_id in the tournament link href
+      row = table.css('tbody tr').find { |tr| tr.at_css('a')&.[]('href').to_s.include?("/#{competition_id}/") }
+      row ||= table.at_css('tbody tr')
+      td  = row&.at_css('td.offsideGivenPerGame')
+      puts "  team #{team_id}: row=#{row ? 'found' : 'nil'}, td=#{td ? td.text.strip : 'nil'}"
+      offsides_pg = td&.text&.to_f || 0.0
+    end
+  end
+
+  [offsides_pg]
+rescue => e
+  puts "scrape_team_corner_offside_stats error (team #{team_id}): #{e.message}"
+  [0.0, 0.0]
+end
+
 def xgs_new(home_team, away_team, home_id, away_id, starting_eleven, competition_id, predicted_lineup = false)
   @br = Watir::Browser.new :chrome, options: {
     args: [
@@ -246,10 +314,24 @@ def xgs_new(home_team, away_team, home_id, away_id, starting_eleven, competition
   @br.goto(home_cards_url)
   puts 'Fetching home cards...'
 
+  home_summary_raw = JSON.parse(@br.elements.first.text)['playerTableStats']
+
+  if ARGV.include?('--discover-fields')
+    sample = home_summary_raw.first
+    if sample
+      puts "\n=== WhoScored summary playerTableStats keys ==="
+      puts sample.keys.sort.join(', ')
+      puts "=== Sample values for first player: #{sample['name']} ==="
+      sample.sort.each { |k, v| puts "  #{k}: #{v.inspect}" }
+      puts "================================================\n"
+    end
+  end
+
   home_cards = starting_eleven[:home].each_with_object({}) do |p, hsh|
-    yellow = JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['name'].include?(p) && x['tournamentId'].to_i == competition_id.to_i}&.first.try(:[], 'yellowCard') || 0
-    red = JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['name'].include?(p) && x['tournamentId'].to_i == competition_id.to_i}&.first.try(:[], 'redCard') || 0
-    apps = JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['name'].include?(p) && x['tournamentId'].to_i == competition_id.to_i}&.first.try(:[], 'apps') || 0
+    player = home_summary_raw.select{|x| x['name'].include?(p) && x['tournamentId'].to_i == competition_id.to_i}.first
+    yellow = player.try(:[], 'yellowCard') || 0
+    red    = player.try(:[], 'redCard')    || 0
+    apps   = player.try(:[], 'apps')       || 0
     hsh[p] = apps.zero? ? 0 : ((yellow + red) / apps.to_f)
   end
 
@@ -271,12 +353,20 @@ def xgs_new(home_team, away_team, home_id, away_id, starting_eleven, competition
 
   @br.goto(away_cards_url)
 
+  away_summary_raw = JSON.parse(@br.elements.first.text)['playerTableStats']
   away_cards = starting_eleven[:away].each_with_object({}) do |p, hsh|
-    yellow = JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['name'].include?(p) && x['tournamentId'].to_i == competition_id.to_i}&.first.try(:[], 'yellowCard') || 0
-    red = JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['name'].include?(p) && x['tournamentId'].to_i == competition_id.to_i}&.first.try(:[], 'redCard') || 0
-    apps = JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['name'].include?(p) && x['tournamentId'].to_i == competition_id.to_i}&.first.try(:[], 'apps') || 0
+    player = away_summary_raw.select{|x| x['name'].include?(p) && x['tournamentId'].to_i == competition_id.to_i}.first
+    yellow = player.try(:[], 'yellowCard') || 0
+    red    = player.try(:[], 'redCard')    || 0
+    apps   = player.try(:[], 'apps')       || 0
     hsh[p] = apps.zero? ? 0 : ((yellow + red) / apps.to_f)
   end
+
+  # Fetch team-level offside stats from WhoScored team HTML page (corners not available on WhoScored)
+  home_offsides_pg, = scrape_team_corner_offside_stats(home_team_url, home_id, competition_id)
+  away_offsides_pg, = scrape_team_corner_offside_stats(away_team_url, away_id, competition_id)
+  puts "Offsides pg — home: #{home_offsides_pg}, away: #{away_offsides_pg}"
+
   sleep(1)
 
   stats = {
@@ -285,7 +375,9 @@ def xgs_new(home_team, away_team, home_id, away_id, starting_eleven, competition
     xgs_warning: xgs_warning,
     home_cards: home_cards,
     away_cards: away_cards,
-    predicted_lineup: predicted_lineup
+    predicted_lineup: predicted_lineup,
+    home_offsides_pg: home_offsides_pg,
+    away_offsides_pg: away_offsides_pg
   }
   stats
 rescue => e
@@ -329,6 +421,34 @@ def export_to_csv(proposals)
   end;0
 end
 
+def export_offsides_csv(results)
+  headers = ['Home', 'Away', 'OffsO35', 'OffsO45']
+  CSV.open('offsides_proposals.csv', 'a',
+           write_headers: !File.exist?('offsides_proposals.csv'),
+           headers: headers, col_sep: ';') do |csv|
+    results.each do |r|
+      next unless r[:offsides_over35].to_f > 0
+      csv << [r[:home_team], r[:away_team], r[:offsides_over35].round(1), r[:offsides_over45].round(1)]
+    end
+  end
+end
+
+def export_player_proposals_csv(results)
+  headers = ['Home', 'Away', 'Team', 'Player', 'Market', 'Probability']
+  CSV.open('player_proposals.csv', 'a',
+           write_headers: !File.exist?('player_proposals.csv'),
+           headers: headers, col_sep: ';') do |csv|
+    results.each do |r|
+      home_team = r[:home_team]
+      away_team = r[:away_team]
+      (r[:home_scorers]      || {}).each { |p, v| csv << [home_team, away_team, home_team, p, 'Scorer', v.round(2)] }
+      (r[:away_scorers]      || {}).each { |p, v| csv << [home_team, away_team, away_team, p, 'Scorer', v.round(2)] }
+      (r[:home_player_cards] || {}).each { |p, v| csv << [home_team, away_team, home_team, p, 'Card',   v.round(2)] }
+      (r[:away_player_cards] || {}).each { |p, v| csv << [home_team, away_team, away_team, p, 'Card',   v.round(2)] }
+    end
+  end
+end
+
 def read_index_file
   File.readlines('index.txt', chomp: true).map(&:to_i)
 end
@@ -338,6 +458,8 @@ def import_from_csv
 end
 
 def build_proposals(predicted_lineups = {})
+  return '' unless File.exist?('bet_proposals.csv')
+
   games = import_from_csv
   skip_cols = ['Missing XGS', 'Home', 'Away', 'Score',
                'Bet1', 'BetX', 'Bet2', 'BetO15', 'BetU15', 'BetO25', 'BetU25', 'BetO35', 'BetU35', 'BetGG', 'BetNG',
@@ -354,6 +476,17 @@ def build_proposals(predicted_lineups = {})
                 'O35' => 'KellyO35', 'U35' => 'KellyU35',
                 'GG'  => 'KellyGG',  'NG'  => 'KellyNG' }
 
+  # Load supplementary CSVs for unified per-match display
+  ht_by_match = File.exist?('ht_proposals.csv') ?
+    CSV.read('ht_proposals.csv', headers: true, col_sep: ';').map(&:to_h)
+       .each_with_object({}) { |r, h| h["#{r['Home']}-#{r['Away']}"] = r } : {}
+  pp_by_match = File.exist?('player_proposals.csv') ?
+    CSV.read('player_proposals.csv', headers: true, col_sep: ';').map(&:to_h)
+       .group_by { |r| "#{r['Home']}-#{r['Away']}" } : {}
+  off_by_match = File.exist?('offsides_proposals.csv') ?
+    CSV.read('offsides_proposals.csv', headers: true, col_sep: ';').map(&:to_h)
+       .each_with_object({}) { |r, h| h["#{r['Home']}-#{r['Away']}"] = r } : {}
+
   by_match = {}
   games.each { |g| by_match["#{g['Home']}-#{g['Away']}"] = g }
 
@@ -368,9 +501,6 @@ def build_proposals(predicted_lineups = {})
       bets << { name: k, prob: v.to_f, tags: [:threshold] } if v.to_f >= threshold[:value]
     end
 
-    # Edge-based exceptional bucket: any market where the bookmaker misprices by
-    # more than EDGE_EXCEPTION_THRESHOLD regardless of raw probability threshold.
-    # 'NG' has no sim column — its probability is derived as 100 - GG.
     edge_col.each do |market, ecol|
       next unless g[ecol] && g[ecol].to_f != 0
       edge = g[ecol].to_f
@@ -384,9 +514,10 @@ def build_proposals(predicted_lineups = {})
       end
     end
 
-    next if bets.empty?
+    match_key = "#{g['Home']}-#{g['Away']}"
+    next if bets.empty? && !ht_by_match[match_key] && !pp_by_match[match_key] && !off_by_match[match_key]
 
-    { g: g, bets: bets }
+    { g: g, bets: bets, match_key: match_key }
   end
 
   return '' if rows.empty?
@@ -394,7 +525,7 @@ def build_proposals(predicted_lineups = {})
   sep = '─' * 56
   lines = []
   rows.each do |row|
-    g, bets = row[:g], row[:bets]
+    g, bets, match_key = row[:g], row[:bets], row[:match_key]
 
     score_part, pct_part = g['Score'].to_s.split(':')
     score_str = pct_part ? "#{score_part} (#{pct_part.to_f.round(1)}%)" : ''
@@ -403,11 +534,12 @@ def build_proposals(predicted_lineups = {})
     odds_str = odds.map { |o| o > 0 ? format('%.2f', o) : '-' }.join(' / ')
 
     lines << sep
-    match_key = "#{g['Home']}-#{g['Away']}"
     header = "#{g['Home']} vs #{g['Away']}"
     header += '  [PREDICTED XI]' if predicted_lineups[match_key]
     lines << "#{header.ljust(38)}  #{score_str}"
     lines << "  Odds: #{odds_str}"
+
+    # Full-time bets
     bets.each do |bet|
       ek = edge_col[bet[:name]]
       kk = kelly_col[bet[:name]]
@@ -429,6 +561,52 @@ def build_proposals(predicted_lineups = {})
       end
       lines << line
     end
+
+    # Half-time section
+    if (ht = ht_by_match[match_key])
+      ht_bets = []
+      ht_bets << { name: 'HT Home', prob: ht['HT1'].to_f,   edge: ht['EdgeHT1'].to_f,  kelly: ht['KellyHT1'].to_f  } if ht['HT1'].to_f   >= HT_SINGLE_THRESHOLD
+      ht_bets << { name: 'HT Draw', prob: ht['HTX'].to_f,   edge: ht['EdgeHTX'].to_f,  kelly: ht['KellyHTX'].to_f  } if ht['HTX'].to_f   >= HT_DRAW_THRESHOLD
+      ht_bets << { name: 'HT Away', prob: ht['HT2'].to_f,   edge: ht['EdgeHT2'].to_f,  kelly: ht['KellyHT2'].to_f  } if ht['HT2'].to_f   >= HT_SINGLE_THRESHOLD
+      ht_bets << { name: 'HT O0.5', prob: ht['HTO05'].to_f, edge: nil, kelly: nil }                                   if ht['HTO05'].to_f  >= HT_OVER05_THRESHOLD
+      ht_bets << { name: 'HT O1.5', prob: ht['HTO15'].to_f, edge: nil, kelly: nil }                                   if ht['HTO15'].to_f  >= HT_OVER15_THRESHOLD
+      ht_bets << { name: 'HT BTTS', prob: ht['HTGG'].to_f,  edge: nil, kelly: nil }                                   if ht['HTGG'].to_f   >= HT_GG_THRESHOLD
+
+      unless ht_bets.empty?
+        lines << format('  ─ Half Time: HT 1/X/2 %.1f%%/%.1f%%/%.1f%%   O0.5 %.1f%%   O1.5 %.1f%%',
+                        ht['HT1'].to_f, ht['HTX'].to_f, ht['HT2'].to_f, ht['HTO05'].to_f, ht['HTO15'].to_f)
+        ht_bets.each do |bet|
+          line = format('  [T] %-10s %5.1f%%', bet[:name], bet[:prob])
+          if bet[:edge].to_f != 0
+            sign = bet[:edge] > 0 ? '+' : ''
+            line += format('   edge %s%.2f%%', sign, bet[:edge] * 100)
+            line += format('   kelly %.2f%%', bet[:kelly] * 100) if bet[:kelly].to_f > 0
+          end
+          lines << line
+        end
+      end
+    end
+
+    # Offsides section
+    if (off = off_by_match[match_key])
+      lines << format('  ─ Offsides  O3.5: %.1f%%   O4.5: %.1f%%', off['OffsO35'].to_f, off['OffsO45'].to_f)
+    end
+
+    # Player props section
+    if (pp = pp_by_match[match_key])
+      scorers = pp.select { |r| r['Market'] == 'Scorer' && r['Probability'].to_f >= PLAYER_SCORER_THRESHOLD }
+                  .sort_by { |r| -r['Probability'].to_f }
+      carders = pp.select { |r| r['Market'] == 'Card'   && r['Probability'].to_f >= PLAYER_CARD_THRESHOLD }
+                  .sort_by { |r| -r['Probability'].to_f }
+      if scorers.any?
+        lines << "  ─ Scorer (>=#{PLAYER_SCORER_THRESHOLD.to_i}%)"
+        scorers.each { |r| lines << format('      %-28s %-20s %5.1f%%', r['Player'], "(#{r['Team']})", r['Probability'].to_f) }
+      end
+      if carders.any?
+        lines << "  ─ Yellow Card (>=#{PLAYER_CARD_THRESHOLD.to_i}%)"
+        carders.each { |r| lines << format('      %-28s %-20s %5.1f%%', r['Player'], "(#{r['Team']})", r['Probability'].to_f) }
+      end
+    end
   end
   lines << sep
   lines.join("\n")
@@ -436,6 +614,121 @@ end
 
 def print_proposals(predicted_lineups = {})
   body = build_proposals(predicted_lineups)
+  puts body unless body.empty?
+end
+
+def build_player_proposals
+  return '' unless File.exist?('player_proposals.csv') && !File.zero?('player_proposals.csv')
+  rows = CSV.read('player_proposals.csv', headers: true, col_sep: ';').map(&:to_h)
+  return '' if rows.empty?
+
+  by_match = rows.group_by { |r| "#{r['Home']}-#{r['Away']}" }
+
+  sep = '─' * 56
+  lines = []
+
+  by_match.each do |_, match_rows|
+    scorers = match_rows.select { |r| r['Market'] == 'Scorer' && r['Probability'].to_f >= PLAYER_SCORER_THRESHOLD }
+                        .sort_by { |r| -r['Probability'].to_f }
+    carders = match_rows.select { |r| r['Market'] == 'Card'   && r['Probability'].to_f >= PLAYER_CARD_THRESHOLD }
+                        .sort_by { |r| -r['Probability'].to_f }
+
+    next if scorers.empty? && carders.empty?
+
+    home = match_rows.first['Home']
+    away = match_rows.first['Away']
+
+    lines << sep
+    lines << "#{home} vs #{away} — Player Props"
+
+    unless scorers.empty?
+      lines << "  Anytime Scorer (>=#{PLAYER_SCORER_THRESHOLD.to_i}%):"
+      scorers.each do |r|
+        lines << format('    %-28s %-22s %5.1f%%', r['Player'], "(#{r['Team']})", r['Probability'].to_f)
+      end
+    end
+
+    unless carders.empty?
+      lines << "  Yellow Card (>=#{PLAYER_CARD_THRESHOLD.to_i}%):"
+      carders.each do |r|
+        lines << format('    %-28s %-22s %5.1f%%', r['Player'], "(#{r['Team']})", r['Probability'].to_f)
+      end
+    end
+  end
+
+  return '' if lines.empty?
+  lines << sep
+  lines.join("\n")
+end
+
+def print_player_proposals
+  body = build_player_proposals
+  puts body unless body.empty?
+end
+
+def export_ht_proposals_csv(results)
+  headers = ['Home', 'Away', 'HT1', 'HTX', 'HT2', 'HTO05', 'HTO15', 'HTGG',
+             'BetHT1', 'BetHTX', 'BetHT2',
+             'EdgeHT1', 'EdgeHTX', 'EdgeHT2',
+             'KellyHT1', 'KellyHTX', 'KellyHT2']
+  CSV.open('ht_proposals.csv', 'a',
+           write_headers: !File.exist?('ht_proposals.csv'),
+           headers: headers, col_sep: ';') do |csv|
+    results.each do |r|
+      csv << [
+        r[:home_team], r[:away_team],
+        r[:ht_home]&.round(1), r[:ht_draw]&.round(1), r[:ht_away]&.round(1),
+        r[:ht_over05]&.round(1), r[:ht_over15]&.round(1), r[:ht_gg]&.round(1),
+        r[:bet_ht1], r[:bet_htx], r[:bet_ht2],
+        r[:ht1_edge], r[:htx_edge], r[:ht2_edge],
+        r[:ht1_kelly], r[:htx_kelly], r[:ht2_kelly]
+      ]
+    end
+  end
+end
+
+def build_ht_proposals
+  return '' unless File.exist?('ht_proposals.csv') && !File.zero?('ht_proposals.csv')
+  rows = CSV.read('ht_proposals.csv', headers: true, col_sep: ';').map(&:to_h)
+  return '' if rows.empty?
+
+  sep = '─' * 56
+  lines = []
+
+  rows.each do |r|
+    bets = []
+    bets << { name: 'HT Home',   prob: r['HT1'].to_f,   edge: r['EdgeHT1'].to_f,   kelly: r['KellyHT1'].to_f  } if r['HT1'].to_f   >= HT_SINGLE_THRESHOLD
+    bets << { name: 'HT Draw',   prob: r['HTX'].to_f,   edge: r['EdgeHTX'].to_f,   kelly: r['KellyHTX'].to_f  } if r['HTX'].to_f   >= HT_DRAW_THRESHOLD
+    bets << { name: 'HT Away',   prob: r['HT2'].to_f,   edge: r['EdgeHT2'].to_f,   kelly: r['KellyHT2'].to_f  } if r['HT2'].to_f   >= HT_SINGLE_THRESHOLD
+    bets << { name: 'HT O0.5',   prob: r['HTO05'].to_f, edge: nil, kelly: nil }                                  if r['HTO05'].to_f  >= HT_OVER05_THRESHOLD
+    bets << { name: 'HT O1.5',   prob: r['HTO15'].to_f, edge: nil, kelly: nil }                                  if r['HTO15'].to_f  >= HT_OVER15_THRESHOLD
+    bets << { name: 'HT BTTS',   prob: r['HTGG'].to_f,  edge: nil, kelly: nil }                                  if r['HTGG'].to_f   >= HT_GG_THRESHOLD
+
+    next if bets.empty?
+
+    lines << sep
+    lines << "#{r['Home']} vs #{r['Away']} — Half Time"
+    lines << format('  HT 1/X/2: %.1f%% / %.1f%% / %.1f%%', r['HT1'].to_f, r['HTX'].to_f, r['HT2'].to_f)
+    lines << format('  HT O0.5: %.1f%%   HT O1.5: %.1f%%   HT BTTS: %.1f%%', r['HTO05'].to_f, r['HTO15'].to_f, r['HTGG'].to_f)
+
+    bets.each do |bet|
+      line = format('  [T] %-10s %5.1f%%', bet[:name], bet[:prob])
+      if bet[:edge] && bet[:edge] != 0
+        sign = bet[:edge] > 0 ? '+' : ''
+        line += format('   edge %s%.2f%%', sign, bet[:edge] * 100)
+        line += format('   kelly %.2f%%', bet[:kelly] * 100) if bet[:kelly].to_f > 0
+      end
+      lines << line
+    end
+  end
+
+  return '' if lines.empty?
+  lines << sep
+  lines.join("\n")
+end
+
+def print_ht_proposals
+  body = build_ht_proposals
   puts body unless body.empty?
 end
 
@@ -459,6 +752,24 @@ def format_results_for_prompt(results)
     lines << "  O1.5/O2.5/O3.5: #{r[:over15].round(1)}% / #{r[:over25].round(1)}% / #{r[:over35].round(1)}%"
     lines << "  GG: #{r[:gg].round(1)}%   Both Cards: #{r[:both_cards].round(1)}%   Most likely score: #{r[:score]}"
     lines << "  Missing XGS: #{r[:missing_xgs]}"
+
+    all_scorers = ((r[:home_scorers] || {}).merge(r[:away_scorers] || {}))
+                    .select { |_, v| v >= PLAYER_SCORER_THRESHOLD }
+                    .sort_by { |_, v| -v }.first(5)
+    lines << "  Top scorers: #{all_scorers.map { |n, v| "#{n} #{v.round(1)}%" }.join(', ')}" unless all_scorers.empty?
+
+    all_carders = ((r[:home_player_cards] || {}).merge(r[:away_player_cards] || {}))
+                    .select { |_, v| v >= PLAYER_CARD_THRESHOLD }
+                    .sort_by { |_, v| -v }.first(5)
+    lines << "  Card risks:  #{all_carders.map { |n, v| "#{n} #{v.round(1)}%" }.join(', ')}" unless all_carders.empty?
+
+    lines << format('  HT 1/X/2: %.1f%% / %.1f%% / %.1f%%   HT O0.5: %.1f%%   HT O1.5: %.1f%%',
+                    r[:ht_home].to_f, r[:ht_draw].to_f, r[:ht_away].to_f,
+                    r[:ht_over05].to_f, r[:ht_over15].to_f)
+    if r[:offsides_over35].to_f > 0
+      lines << format('  Offsides O3.5: %.1f%%  O4.5: %.1f%%',
+                      r[:offsides_over35].to_f, r[:offsides_over45].to_f)
+    end
 
     odds_parts = []
     odds_parts << "1=#{r[:bet1]}" if r[:bet1].to_f > 1
@@ -569,15 +880,16 @@ def simulate_match(home_team, away_team, stats)
     gg: 0,
     two_three: 0,
     both_cards: 0,
+    ht_home: 0, ht_draw: 0, ht_away: 0,
+    ht_over05: 0, ht_over15: 0, ht_gg: 0,
+    offsides_over35: 0, offsides_over45: 0,
     score: ''
-    #home_scorers: {},
-    #away_scorers: {}
   }
 
-  home_scorers = []
-  away_scorers = []
-  home_assists = []
-  away_assists = []
+  home_scorer_count = Hash.new(0)
+  away_scorer_count = Hash.new(0)
+  home_card_count   = Hash.new(0)
+  away_card_count   = Hash.new(0)
   scores = []
 
   puts "Simulating games..."
@@ -602,11 +914,13 @@ def simulate_match(home_team, away_team, stats)
     home = ((home_xg_stats.sum{ |_, v| v })).round
     away = ((away_xg_stats.sum{ |_, v| v })).round
     #away = ((away_xg_stats.sum{ |_, v| v } + home_xga ) / 2.0).round
-    home_scorers << home_xg_stats.each_with_object([]) { |k, arr| arr << [k[0]] * k[1] }.flatten.sample(home)
-    away_scorers << away_xg_stats.each_with_object([]) { |k, arr| arr << [k[0]] * k[1] }.flatten.sample(away)
+    # Track anytime scorers (players who scored ≥1 goal in this sim)
+    home_xg_stats.each_key { |p| home_scorer_count[p] += 1 }
+    away_xg_stats.each_key { |p| away_scorer_count[p] += 1 }
+    # Track per-player cards
+    home_yellow_cards.each_key { |p| home_card_count[p] += 1 }
+    away_yellow_cards.each_key { |p| away_card_count[p] += 1 }
 
-    #home_assists << home_assist_stats.keys
-    #away_assists << away_assist_stats.keys
     scores << "#{home}-#{away}"
 
     if home == away
@@ -648,13 +962,47 @@ def simulate_match(home_team, away_team, stats)
     if home_yellow > 0 && away_yellow > 0
       res[:both_cards] += 1
     end
+
+    # Half-time simulation: rescale avg shots by HT_GOAL_FACTOR
+    ht_home_goals = stats[:home_xgs].sum do |(_, (xg_per_shot, avg_shots))|
+      shots = Distribution::Poisson.rng(avg_shots * HT_GOAL_FACTOR)
+      Array.new(shots) { rand < xg_per_shot ? 1 : 0 }.sum
+    end
+    ht_away_goals = stats[:away_xgs].sum do |(_, (xg_per_shot, avg_shots))|
+      shots = Distribution::Poisson.rng(avg_shots * HT_GOAL_FACTOR)
+      Array.new(shots) { rand < xg_per_shot ? 1 : 0 }.sum
+    end
+
+    if ht_home_goals > ht_away_goals
+      res[:ht_home] += 1
+    elsif ht_home_goals == ht_away_goals
+      res[:ht_draw] += 1
+    else
+      res[:ht_away] += 1
+    end
+    res[:ht_over05] += 1 if ht_home_goals + ht_away_goals >= 1
+    res[:ht_over15] += 1 if ht_home_goals + ht_away_goals >= 2
+    res[:ht_gg]     += 1 if ht_home_goals > 0 && ht_away_goals > 0
+
+    # Offsides simulation
+    if stats[:home_offsides_pg].to_f > 0 || stats[:away_offsides_pg].to_f > 0
+      total_offsides = Distribution::Poisson.rng(stats[:home_offsides_pg].to_f) +
+                       Distribution::Poisson.rng(stats[:away_offsides_pg].to_f)
+      res[:offsides_over35] += 1 if total_offsides > 3.5
+      res[:offsides_over45] += 1 if total_offsides > 4.5
+    end
   end
 
-  #res[:home_scorers] = home_scorers.flatten.tally.transform_values{|x| x / (NUMBER_OF_SIMULATIONS / 100).to_f}
-  #res[:away_scorers] = away_scorers.flatten.tally.transform_values{|x| x / (NUMBER_OF_SIMULATIONS / 100).to_f}
+  pct = NUMBER_OF_SIMULATIONS / 100.0
+  res[:home_scorers]      = home_scorer_count.transform_values { |v| v / pct }
+  res[:away_scorers]      = away_scorer_count.transform_values { |v| v / pct }
+  res[:home_player_cards] = home_card_count.transform_values   { |v| v / pct }
+  res[:away_player_cards] = away_card_count.transform_values   { |v| v / pct }
   res[:score] = scores.tally.transform_values{|v| v/(NUMBER_OF_SIMULATIONS.to_f / 100)}.sort_by{|_, v| v}.reverse.first.join(':')
 
-  return res.merge(res.except(:home_team, :away_team, :missing_xgs, :predicted_lineup, :home_scorers, :away_scorers, :score).transform_values{ |v| v / (NUMBER_OF_SIMULATIONS / 100.0) })
+  return res.merge(res.except(:home_team, :away_team, :missing_xgs, :predicted_lineup,
+                               :home_scorers, :away_scorers, :home_player_cards, :away_player_cards,
+                               :score).transform_values{ |v| v / (NUMBER_OF_SIMULATIONS / 100.0) })
 rescue => e
   #binding.pry
 end
@@ -667,9 +1015,11 @@ begin
 
       Options:
         --help          Show this help message and exit
-        --reset-index   Clear index.txt and delete bet_proposals.csv, then continue
-        --all-leagues   Fetch all leagues from WhoScored, ignoring AVAILABLE_LEAGUES filter
-        --tips N        After simulation, ask Claude to pick the top N tips (requires ANTHROPIC_API_KEY)
+        --reset-index      Clear index.txt and delete all proposal CSVs, then continue
+        --all-leagues      Fetch all leagues from WhoScored, ignoring AVAILABLE_LEAGUES filter
+        --tips N           After simulation, ask Claude to pick the top N tips (requires ANTHROPIC_API_KEY)
+        --discover-fields       Print all WhoScored player summary JSON field names (use to audit available keys)
+        --discover-team-html    Dump WhoScored team page HTML/scripts to identify corners/offsides selectors
 
       Positional arguments (optional):
         HOME            Home team name (runs a single match instead of today's fixtures)
@@ -683,8 +1033,11 @@ begin
 
   if ARGV.include?('--reset-index')
     File.write('index.txt', '')
-    File.delete('bet_proposals.csv') if File.exist?('bet_proposals.csv')
-    puts "index.txt and bet_proposals.csv reset"
+    File.delete('bet_proposals.csv')        if File.exist?('bet_proposals.csv')
+    File.delete('player_proposals.csv')     if File.exist?('player_proposals.csv')
+    File.delete('ht_proposals.csv')         if File.exist?('ht_proposals.csv')
+    File.delete('offsides_proposals.csv')   if File.exist?('offsides_proposals.csv')
+    puts "index.txt and all proposal CSVs reset"
   end
 
   positional_args = ARGV.reject { |a| a.start_with?('--') || a =~ /^\d+$/ }
@@ -740,7 +1093,10 @@ begin
         o35: [sim[:over35],          m[:bet_o35]],
         u35: [sim[:under35],         m[:bet_u35]],
         gg:  [sim[:gg],              m[:bet_gg]],
-        ng:  [100.0 - sim[:gg],      m[:bet_ng]]
+        ng:  [100.0 - sim[:gg],      m[:bet_ng]],
+        ht1: [sim[:ht_home],         m[:bet_ht1]],
+        htx: [sim[:ht_draw],         m[:bet_htx]],
+        ht2: [sim[:ht_away],         m[:bet_ht2]]
       }.each do |mkt, (sim_pct, odds)|
         edge, kelly = market_edge_kelly(sim_pct, odds)
         sim[:"bet_#{mkt}"]   = odds.to_f > 1 ? odds : nil
@@ -761,12 +1117,15 @@ begin
   end
 ensure
   export_to_csv(results)
+  export_player_proposals_csv(results)
+  export_ht_proposals_csv(results)
+  export_offsides_csv(results)
   predicted_lineups = results.each_with_object({}) do |r, h|
     h["#{r[:home_team]}-#{r[:away_team]}"] = true if r[:predicted_lineup]
   end
-  print_proposals(predicted_lineups)
+  body = build_proposals(predicted_lineups)
+  puts body unless body.empty?
   if results.any?
-    body = build_proposals(predicted_lineups)
     send_proposals_email(body) unless body.empty?
   end
 
