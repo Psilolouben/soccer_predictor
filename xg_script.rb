@@ -251,8 +251,8 @@ def scrape_team_corner_offside_stats(team_url, team_id, competition_id)
     puts "Tab 'defensive' exists: #{tab_link.exists?}"
   end
 
-  if tab_link.exists?
-    @br.execute_script("document.querySelector(\"a[href='#top-team-stats-defensive']\").click()")
+  if tab_link.present?
+    tab_link.click
     sleep(2)
 
     if ARGV.include?('--discover-team-html')
@@ -264,12 +264,23 @@ def scrape_team_corner_offside_stats(team_url, team_id, competition_id)
     doc   = Nokogiri::HTML(@br.html)
     table = doc.at_css('#statistics-team-table-defensive table')
     if table
+      # Find offsides column index by header text (robust against CSS class renames)
+      header_cells = table.css('thead th')
+      off_idx = header_cells.find_index { |th| th.text.strip.downcase.include?('offside') }
+
       # Prefer the row matching competition_id in the tournament link href
       row = table.css('tbody tr').find { |tr| tr.at_css('a')&.[]('href').to_s.include?("/#{competition_id}/") }
       row ||= table.at_css('tbody tr')
-      td  = row&.at_css('td.offsideGivenPerGame')
-      puts "  team #{team_id}: row=#{row ? 'found' : 'nil'}, td=#{td ? td.text.strip : 'nil'}"
-      offsides_pg = td&.text&.to_f || 0.0
+
+      if row && off_idx
+        cells = row.css('td')
+        offsides_pg = cells[off_idx]&.text&.strip&.to_f || 0.0
+      else
+        # Fallback: try original CSS class selector
+        td = row&.at_css('td.offsideGivenPerGame')
+        offsides_pg = td&.text&.to_f || 0.0
+      end
+      puts "  team #{team_id}: row=#{row ? 'found' : 'nil'}, off_idx=#{off_idx.inspect}, offsides_pg=#{offsides_pg}"
     end
   end
 
@@ -522,6 +533,8 @@ def build_proposals(predicted_lineups = {})
 
   return '' if rows.empty?
 
+  rows.sort_by! { |row| -(row[:bets].map { |b| b[:prob] }.max || 0) }
+
   sep = '─' * 56
   lines = []
   rows.each do |row|
@@ -749,8 +762,8 @@ def format_results_for_prompt(results)
   results.each do |r|
     lines << "#{r[:home_team]} vs #{r[:away_team]}#{r[:predicted_lineup] ? ' [PREDICTED XI]' : ''}"
     lines << "  1/X/2: #{r[:home].round(1)}% / #{r[:draw].round(1)}% / #{r[:away].round(1)}%"
-    lines << "  O1.5/O2.5/O3.5: #{r[:over15].round(1)}% / #{r[:over25].round(1)}% / #{r[:over35].round(1)}%"
-    lines << "  GG: #{r[:gg].round(1)}%   Both Cards: #{r[:both_cards].round(1)}%   Most likely score: #{r[:score]}"
+    lines << "  O1.5: #{r[:over15].round(1)}%  U1.5: #{r[:under15].round(1)}%  O2.5: #{r[:over25].round(1)}%  U2.5: #{r[:under25].round(1)}%  O3.5: #{r[:over35].round(1)}%  U3.5: #{r[:under35].round(1)}%"
+    lines << "  GG: #{r[:gg].round(1)}%  NG: #{(100.0 - r[:gg]).round(1)}%  Both Cards: #{r[:both_cards].round(1)}%  2or3 Goals: #{r[:two_three].round(1)}%  Most likely score: #{r[:score]}"
     lines << "  Missing XGS: #{r[:missing_xgs]}"
 
     all_scorers = ((r[:home_scorers] || {}).merge(r[:away_scorers] || {}))
@@ -763,9 +776,9 @@ def format_results_for_prompt(results)
                     .sort_by { |_, v| -v }.first(5)
     lines << "  Card risks:  #{all_carders.map { |n, v| "#{n} #{v.round(1)}%" }.join(', ')}" unless all_carders.empty?
 
-    lines << format('  HT 1/X/2: %.1f%% / %.1f%% / %.1f%%   HT O0.5: %.1f%%   HT O1.5: %.1f%%',
+    lines << format('  HT 1/X/2: %.1f%% / %.1f%% / %.1f%%   HT O0.5: %.1f%%   HT O1.5: %.1f%%   HT GG: %.1f%%',
                     r[:ht_home].to_f, r[:ht_draw].to_f, r[:ht_away].to_f,
-                    r[:ht_over05].to_f, r[:ht_over15].to_f)
+                    r[:ht_over05].to_f, r[:ht_over15].to_f, r[:ht_gg].to_f)
     if r[:offsides_over35].to_f > 0
       lines << format('  Offsides O3.5: %.1f%%  O4.5: %.1f%%',
                       r[:offsides_over35].to_f, r[:offsides_over45].to_f)
@@ -786,19 +799,37 @@ def format_results_for_prompt(results)
     lines << "  Odds: #{odds_parts.join('  ')}" unless odds_parts.empty?
 
     edge_parts = []
-    edge_parts << "1=#{(r[:home_edge]*100).round(1)}pp"  if r[:home_edge]
-    edge_parts << "X=#{(r[:draw_edge]*100).round(1)}pp"  if r[:draw_edge]
-    edge_parts << "2=#{(r[:away_edge]*100).round(1)}pp"  if r[:away_edge]
+    edge_parts << "1=#{(r[:home_edge]*100).round(1)}pp"   if r[:home_edge]
+    edge_parts << "X=#{(r[:draw_edge]*100).round(1)}pp"   if r[:draw_edge]
+    edge_parts << "2=#{(r[:away_edge]*100).round(1)}pp"   if r[:away_edge]
+    edge_parts << "O1.5=#{(r[:o15_edge]*100).round(1)}pp" if r[:o15_edge]
+    edge_parts << "U1.5=#{(r[:u15_edge]*100).round(1)}pp" if r[:u15_edge]
     edge_parts << "O2.5=#{(r[:o25_edge]*100).round(1)}pp" if r[:o25_edge]
-    edge_parts << "GG=#{(r[:gg_edge]*100).round(1)}pp"   if r[:gg_edge]
+    edge_parts << "U2.5=#{(r[:u25_edge]*100).round(1)}pp" if r[:u25_edge]
+    edge_parts << "O3.5=#{(r[:o35_edge]*100).round(1)}pp" if r[:o35_edge]
+    edge_parts << "U3.5=#{(r[:u35_edge]*100).round(1)}pp" if r[:u35_edge]
+    edge_parts << "GG=#{(r[:gg_edge]*100).round(1)}pp"    if r[:gg_edge]
+    edge_parts << "NG=#{(r[:ng_edge]*100).round(1)}pp"    if r[:ng_edge]
+    edge_parts << "HT1=#{(r[:ht1_edge]*100).round(1)}pp"  if r[:ht1_edge]
+    edge_parts << "HTX=#{(r[:htx_edge]*100).round(1)}pp"  if r[:htx_edge]
+    edge_parts << "HT2=#{(r[:ht2_edge]*100).round(1)}pp"  if r[:ht2_edge]
     lines << "  Edge: #{edge_parts.join('  ')}" unless edge_parts.empty?
 
     kelly_parts = []
-    kelly_parts << "1=#{(r[:home_kelly]*100).round(2)}%"  if r[:home_kelly].to_f > 0
-    kelly_parts << "X=#{(r[:draw_kelly]*100).round(2)}%"  if r[:draw_kelly].to_f > 0
-    kelly_parts << "2=#{(r[:away_kelly]*100).round(2)}%"  if r[:away_kelly].to_f > 0
+    kelly_parts << "1=#{(r[:home_kelly]*100).round(2)}%"   if r[:home_kelly].to_f > 0
+    kelly_parts << "X=#{(r[:draw_kelly]*100).round(2)}%"   if r[:draw_kelly].to_f > 0
+    kelly_parts << "2=#{(r[:away_kelly]*100).round(2)}%"   if r[:away_kelly].to_f > 0
+    kelly_parts << "O1.5=#{(r[:o15_kelly]*100).round(2)}%" if r[:o15_kelly].to_f > 0
+    kelly_parts << "U1.5=#{(r[:u15_kelly]*100).round(2)}%" if r[:u15_kelly].to_f > 0
     kelly_parts << "O2.5=#{(r[:o25_kelly]*100).round(2)}%" if r[:o25_kelly].to_f > 0
-    kelly_parts << "GG=#{(r[:gg_kelly]*100).round(2)}%"   if r[:gg_kelly].to_f > 0
+    kelly_parts << "U2.5=#{(r[:u25_kelly]*100).round(2)}%" if r[:u25_kelly].to_f > 0
+    kelly_parts << "O3.5=#{(r[:o35_kelly]*100).round(2)}%" if r[:o35_kelly].to_f > 0
+    kelly_parts << "U3.5=#{(r[:u35_kelly]*100).round(2)}%" if r[:u35_kelly].to_f > 0
+    kelly_parts << "GG=#{(r[:gg_kelly]*100).round(2)}%"    if r[:gg_kelly].to_f > 0
+    kelly_parts << "NG=#{(r[:ng_kelly]*100).round(2)}%"    if r[:ng_kelly].to_f > 0
+    kelly_parts << "HT1=#{(r[:ht1_kelly]*100).round(2)}%"  if r[:ht1_kelly].to_f > 0
+    kelly_parts << "HTX=#{(r[:htx_kelly]*100).round(2)}%"  if r[:htx_kelly].to_f > 0
+    kelly_parts << "HT2=#{(r[:ht2_kelly]*100).round(2)}%"  if r[:ht2_kelly].to_f > 0
     lines << "  Kelly: #{kelly_parts.join('  ')}" unless kelly_parts.empty?
 
     lines << ''
@@ -806,23 +837,128 @@ def format_results_for_prompt(results)
   lines.join("\n")
 end
 
-def ask_claude_for_tips(n_tips, results)
-  return if results.empty?
+def format_csvs_for_prompt
+  return '' unless File.exist?('bet_proposals.csv')
 
-  sim_data = format_results_for_prompt(results)
+  rows = CSV.read('bet_proposals.csv', headers: true, col_sep: ';').map(&:to_h)
+  ht_by_match  = File.exist?('ht_proposals.csv') ?
+    CSV.read('ht_proposals.csv', headers: true, col_sep: ';').map(&:to_h)
+       .each_with_object({}) { |r, h| h["#{r['Home']}-#{r['Away']}"] = r } : {}
+  off_by_match = File.exist?('offsides_proposals.csv') ?
+    CSV.read('offsides_proposals.csv', headers: true, col_sep: ';').map(&:to_h)
+       .each_with_object({}) { |r, h| h["#{r['Home']}-#{r['Away']}"] = r } : {}
+  pp_by_match  = File.exist?('player_proposals.csv') ?
+    CSV.read('player_proposals.csv', headers: true, col_sep: ';').map(&:to_h)
+       .group_by { |r| "#{r['Home']}-#{r['Away']}" } : {}
+
+  by_match = {}
+  rows.each { |r| by_match["#{r['Home']}-#{r['Away']}"] = r }
+
+  lines = []
+  by_match.each do |match_key, r|
+    next if r['Missing XGS'] == 'true'
+    lines << "#{r['Home']} vs #{r['Away']}"
+    lines << "  1/X/2: #{r['1'].to_f.round(1)}% / #{r['X'].to_f.round(1)}% / #{r['2'].to_f.round(1)}%"
+    lines << "  O1.5/O2.5/O3.5: #{r['O15'].to_f.round(1)}% / #{r['O25'].to_f.round(1)}% / #{r['O35'].to_f.round(1)}%"
+    lines << "  GG: #{r['GG'].to_f.round(1)}%   Both Cards: #{r['Both Cards'].to_f.round(1)}%   Most likely score: #{r['Score']}"
+    lines << "  Missing XGS: #{r['Missing XGS']}"
+
+    odds_parts = []
+    [['Bet1','1'], ['BetX','X'], ['Bet2','2'], ['BetO15','O1.5'], ['BetU15','U1.5'],
+     ['BetO25','O2.5'], ['BetU25','U2.5'], ['BetO35','O3.5'], ['BetU35','U3.5'],
+     ['BetGG','GG'], ['BetNG','NG']].each do |col, label|
+      odds_parts << "#{label}=#{r[col]}" if r[col].to_f > 1
+    end
+    lines << "  Odds: #{odds_parts.join('  ')}" unless odds_parts.empty?
+
+    edge_parts = []
+    [['Edge1','1'], ['EdgeX','X'], ['Edge2','2'], ['EdgeO25','O2.5'],
+     ['EdgeGG','GG'], ['EdgeNG','NG']].each do |col, label|
+      edge_parts << "#{label}=#{(r[col].to_f * 100).round(1)}pp" if r[col].to_f != 0
+    end
+    lines << "  Edge: #{edge_parts.join('  ')}" unless edge_parts.empty?
+
+    kelly_parts = []
+    [['Kelly1','1'], ['KellyX','X'], ['Kelly2','2'], ['KellyO25','O2.5'],
+     ['KellyGG','GG']].each do |col, label|
+      kelly_parts << "#{label}=#{(r[col].to_f * 100).round(2)}%" if r[col].to_f > 0
+    end
+    lines << "  Kelly: #{kelly_parts.join('  ')}" unless kelly_parts.empty?
+
+    if (ht = ht_by_match[match_key])
+      lines << format('  HT 1/X/2: %.1f%% / %.1f%% / %.1f%%   HT O0.5: %.1f%%   HT O1.5: %.1f%%',
+                      ht['HT1'].to_f, ht['HTX'].to_f, ht['HT2'].to_f, ht['HTO05'].to_f, ht['HTO15'].to_f)
+      ht_odds = []
+      ht_odds << "HT1=#{ht['BetHT1']}" if ht['BetHT1'].to_f > 1
+      ht_odds << "HTX=#{ht['BetHTX']}" if ht['BetHTX'].to_f > 1
+      ht_odds << "HT2=#{ht['BetHT2']}" if ht['BetHT2'].to_f > 1
+      lines << "  HT Odds: #{ht_odds.join('  ')}" unless ht_odds.empty?
+      ht_edge = []
+      ht_edge << "HT1=#{(ht['EdgeHT1'].to_f * 100).round(1)}pp" if ht['EdgeHT1'].to_f != 0
+      ht_edge << "HTX=#{(ht['EdgeHTX'].to_f * 100).round(1)}pp" if ht['EdgeHTX'].to_f != 0
+      ht_edge << "HT2=#{(ht['EdgeHT2'].to_f * 100).round(1)}pp" if ht['EdgeHT2'].to_f != 0
+      lines << "  HT Edge: #{ht_edge.join('  ')}" unless ht_edge.empty?
+    end
+
+    if (off = off_by_match[match_key])
+      lines << format('  Offsides O3.5: %.1f%%  O4.5: %.1f%%', off['OffsO35'].to_f, off['OffsO45'].to_f)
+    end
+
+    if (pp = pp_by_match[match_key])
+      scorers = pp.select { |pr| pr['Market'] == 'Scorer' && pr['Probability'].to_f >= PLAYER_SCORER_THRESHOLD }
+                  .sort_by { |pr| -pr['Probability'].to_f }.first(5)
+      carders = pp.select { |pr| pr['Market'] == 'Card'   && pr['Probability'].to_f >= PLAYER_CARD_THRESHOLD }
+                  .sort_by { |pr| -pr['Probability'].to_f }.first(5)
+      lines << "  Top scorers: #{scorers.map { |pr| "#{pr['Player']} #{pr['Probability'].to_f.round(1)}%" }.join(', ')}" unless scorers.empty?
+      lines << "  Card risks:  #{carders.map { |pr| "#{pr['Player']} #{pr['Probability'].to_f.round(1)}%" }.join(', ')}" unless carders.empty?
+    end
+
+    lines << ''
+  end
+  lines.join("\n")
+end
+
+def ask_claude_for_tips_from_csvs
+  sim_data = format_csvs_for_prompt
+  return puts("No CSV data found — run the simulation first.") if sim_data.strip.empty?
 
   template = File.read(File.join(__dir__, 'prompts/tips_prompt.md'))
-  prompt = template
-    .gsub('{{N_TIPS}}',    n_tips.to_s)
-    .gsub('{{SIM_DATA}}',  sim_data)
+  prompt   = template.gsub('{{SIM_DATA}}', sim_data)
 
-  puts "\nAsking Claude for top #{n_tips} tips..."
+  puts "\nAsking Claude for tips (from existing CSVs)..."
   output = IO.popen(['claude', '-p', prompt], err: :close, &:read)
 
   if $?.success? && !output.strip.empty?
     sep = '═' * 56
     puts "\n#{sep}"
-    puts "  AI TIPS (Top #{n_tips})"
+    puts "  AI TIPS"
+    puts sep
+    puts output.strip
+    puts sep
+  else
+    puts "Claude CLI returned no output. Is `claude` installed and logged in?"
+  end
+rescue Errno::ENOENT
+  puts "`claude` CLI not found in PATH — skipping tips"
+rescue => e
+  puts "Tips failed: #{e.message}"
+end
+
+def ask_claude_for_tips(results)
+  return if results.empty?
+
+  sim_data = format_results_for_prompt(results)
+
+  template = File.read(File.join(__dir__, 'prompts/tips_prompt.md'))
+  prompt = template.gsub('{{SIM_DATA}}', sim_data)
+
+  puts "\nAsking Claude for tips..."
+  output = IO.popen(['claude', '-p', prompt], err: :close, &:read)
+
+  if $?.success? && !output.strip.empty?
+    sep = '═' * 56
+    puts "\n#{sep}"
+    puts "  AI TIPS"
     puts sep
     puts output.strip
     puts sep
@@ -1017,7 +1153,8 @@ begin
         --help          Show this help message and exit
         --reset-index      Clear index.txt and delete all proposal CSVs, then continue
         --all-leagues      Fetch all leagues from WhoScored, ignoring AVAILABLE_LEAGUES filter
-        --tips N           After simulation, ask Claude to pick the top N tips (requires ANTHROPIC_API_KEY)
+        --tips             After simulation, ask Claude for the best tips (requires `claude` CLI)
+        --tips-only        Re-run Claude tips from existing CSVs without re-scraping
         --discover-fields       Print all WhoScored player summary JSON field names (use to audit available keys)
         --discover-team-html    Dump WhoScored team page HTML/scripts to identify corners/offsides selectors
 
@@ -1026,6 +1163,11 @@ begin
         AWAY            Away team name
         LINEUP_URL      WhoScored lineups URL for the match
     HELP
+    exit!
+  end
+
+  if ARGV.include?('--tips-only')
+    ask_claude_for_tips_from_csvs
     exit!
   end
 
@@ -1129,10 +1271,7 @@ ensure
     send_proposals_email(body) unless body.empty?
   end
 
-  tips_idx = ARGV.index('--tips')
-  if tips_idx
-    n_tips = ARGV[tips_idx + 1].to_i
-    n_tips = 5 if n_tips < 1
-    ask_claude_for_tips(n_tips, results)
+  if ARGV.include?('--tips')
+    ask_claude_for_tips(results)
   end
 end

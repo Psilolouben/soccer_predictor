@@ -7,37 +7,61 @@ away-field stats — venue context is already baked in.
 
 - **1 / X / 2** — simulated win probabilities (%)
 - **O15/U15, O25/U25, O35/U35** — simulated over/under goal probabilities (%)
-- **GG** — both teams to score probability (%)
+- **GG / NG** — both teams to score / neither probability (%)
+- **2or3 Goals** — probability of exactly 2 or 3 total goals (%)
 - **Both Cards** — both teams receive a yellow card probability (%)
 - **Score** — most likely scoreline with its probability
 - **Top scorers** — per-player anytime goalscorer probability (%) for players above threshold
 - **Card risks** — per-player yellow card probability (%) for players above threshold
 - **Offsides O3.5 / O4.5** — simulated probability that total match offsides exceed 3.5 or 4.5 (Poisson-modelled from WhoScored season averages)
-- **Bet1/BetX/Bet2, BetO*/BetU*, BetGG/BetNG** — bookmaker decimal odds
-- **Edge1/EdgeX/Edge2, EdgeO*, EdgeGG/EdgeNG** — sim prob minus implied prob from odds
+- **Odds** — bookmaker decimal odds for each market (1/X/2, O/U 1.5/2.5/3.5, GG, NG, HT 1/X/2)
+- **Edge** — sim prob minus implied prob from odds, in percentage points per market
   (positive = value bet; negative = bookmaker overestimates / fade candidate)
-- **Kelly1/KellyX/Kelly2, KellyO*, KellyGG/KellyNG** — Kelly criterion stake fraction
+- **Kelly** — Kelly criterion stake fraction per market; only shown when edge is positive
   (higher = stronger value relative to odds)
 - **Missing XGS** — true when more than 2 players had no xG data (treat with extra caution)
 - **[PREDICTED XI]** — lineup was not confirmed; treat with extra caution
 
 ## Your task
 
-Select the **{{N_TIPS}}** strongest betting tips from the full simulation data below.
-Eligible tip types include **match markets** (1/X/2, O/U goals, GG), **offsides O/U**
-(from "Offsides" lines), **player anytime scorer** (from "Top scorers" lines), and
-**player yellow card** (from "Card risks" lines).
+Review the full simulation data below and produce **two ranked sections**:
 
-Weigh the following factors:
+### Section 1 — Safe tips (simulation-first)
 
-1. **Simulation probability** — higher is stronger, especially for O/U and GG markets
-2. **Edge** — positive edge means the bookmaker underprices the outcome (value bet)
-3. **Kelly** — higher Kelly = more optimal stake; prefer Kelly > 0.03 for real bets
-4. **Odds** — consider risk/reward: a 85% probability at 1.10 is less interesting than 75% at 1.50
-5. **Personal judgement** — if a match has [PREDICTED XI] or Missing XGS, discount it;
-   prefer markets where multiple signals agree (e.g. O2.5 + GG both high); avoid
-   correlated tips from the same match dominating the list unless the evidence is overwhelming;
-   for player tips, favour players with very high probability (≥50% scorer, ≥45% card)
+Select bets where the simulation probability is genuinely high and the outcome is credible.
+These are the most reliable picks regardless of bookmaker odds.
+
+Prioritise by:
+1. **Simulation probability** — the primary signal; higher is safer
+2. **Convergence** — multiple correlated markets agreeing (e.g. O2.5 + GG both very high)
+3. **Odds sanity** — an 88% probability at 1.05 is not worth it; favour cases where odds offer at least some return
+4. **Data quality** — discount [PREDICTED XI] and Missing XGS matches
+
+For player tips in this section, favour sim prob ≥ 50% for scorers and ≥ 45% for cards.
+Do not force a fixed number — include only bets where the simulation strongly justifies the pick.
+
+### Section 2 — Value tips (Kelly-first)
+
+Select bets where the bookmaker is significantly mispricing the outcome — positive edge and
+meaningful Kelly — even if the raw probability wouldn't qualify for Section 1 on its own.
+These carry more risk but offer real expected value.
+
+Prioritise by:
+1. **Kelly** — higher Kelly = stronger value relative to stake risk; prefer Kelly > 0.03
+2. **Edge** — positive edge required (bookmaker underprices); larger edge = more conviction
+3. **Odds context** — value bets on longer odds (e.g. 2.50+) are more interesting than marginal edges on short odds
+4. **Data quality** — same caution for [PREDICTED XI] and Missing XGS
+
+Limit this section to the top handful of genuine value cases. Do not pad it.
+
+---
+
+Eligible tip types for both sections: **match markets** (1/X/2, O/U goals, GG, NG, 2or3 Goals),
+**half-time markets** (HT 1/X/2, HT O0.5, HT O1.5, HT GG — from "HT" lines),
+**offsides O/U** (from "Offsides" lines), **player anytime scorer** (from "Top scorers" lines),
+and **player yellow card** (from "Card risks" lines).
+
+Avoid correlated tips from the same match dominating either list unless the evidence is overwhelming.
 
 ## Simulation results (current run)
 
@@ -47,21 +71,22 @@ Weigh the following factors:
 
 ## Output format
 
-Respond with exactly {{N_TIPS}} tips, numbered. For each tip use the appropriate format:
+Use two clearly labelled sections. Within each section, number tips and rank from most to least confident.
+
+**## Safe Tips**
 
 Match market tip:
 **N. Match — Market (Odds)**
-- Sim prob: X%  |  Edge: ±Y%  |  Kelly: Z%
-- Reasoning: one or two sentences on why this is the strongest pick.
+- Sim prob: X%  |  Edge: ±Y%  (omit Edge/Kelly if unavailable)
+- Reasoning: one or two sentences focused on why the simulation strongly supports this.
 
-Offsides tip:
-**N. Match — Offsides Over/Under X.5**
-- Sim prob: X%
-- Reasoning: one or two sentences on why this is the strongest pick.
+Half-time / Offsides / Player tip: same format, omit unavailable fields.
 
-Player tip (scorer or card):
-**N. Match — Player Name — Anytime Scorer / Yellow Card**
-- Sim prob: X%
-- Reasoning: one or two sentences on why this is the strongest pick.
+**## Value Tips**
 
-Rank from most to least confident. Be concise and direct. Do not add preamble or trailing commentary.
+**N. Match — Market (Odds)**
+- Sim prob: X%  |  Edge: +Y%  |  Kelly: Z%
+- Reasoning: one or two sentences focused on why the bookmaker is mispricing this.
+
+Be concise and direct. Do not add preamble or trailing commentary.
+If a section has no qualifying tips, write "None" under its heading and explain briefly.
