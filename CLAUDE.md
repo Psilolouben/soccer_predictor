@@ -89,6 +89,9 @@ These rows are labeled `[EDGE]` or `[FADE]` in the printed output. A bet that qu
 it at 2.20 (implied 45%), the +27 pp edge is clearly actionable. Conversely, O25 at 55%
 that a bookmaker prices at 1.50 (implied 67%) is a strong fade even below threshold.
 
+## Output ordering
+`build_proposals` sorts matches in **descending order by the highest bet probability** among that match's qualifying bets, so the most confident picks always appear first.
+
 ## Available leagues (AVAILABLE_LEAGUES)
 Keyed by WhoScored tournament ID. Championship (id 7) is currently commented out.
 
