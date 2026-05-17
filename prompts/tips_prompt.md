@@ -49,8 +49,9 @@ These carry more risk but offer real expected value.
 Prioritise by:
 1. **Kelly** — higher Kelly = stronger value relative to stake risk; prefer Kelly > 0.03
 2. **Edge** — positive edge required (bookmaker underprices); larger edge = more conviction
-3. **Odds context** — value bets on longer odds (e.g. 2.50+) are more interesting than marginal edges on short odds
-4. **Data quality** — same caution for [PREDICTED XI] and Missing XGS
+3. **Sim probability floor** — only include bets where the simulated probability is at least 38%; a high Kelly on a 20% outcome is mathematically interesting but not practically worth betting
+4. **Odds context** — value bets on longer odds (e.g. 2.50+) are more interesting than marginal edges on short odds, but only if the sim probability floor is met
+5. **Data quality** — same caution for [PREDICTED XI] and Missing XGS
 
 Limit this section to the top handful of genuine value cases. Do not pad it.
 
