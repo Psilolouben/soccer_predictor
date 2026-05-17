@@ -404,13 +404,13 @@ def write_to_index_file(res)
 }
 end
 
-def export_to_csv(proposals)
+def write_proposals_csv(path, proposals, append: false)
   headers = ['Home', 'Away', '1', 'X', '2', '1X', 'X2', '12', 'O15', 'U15', 'O25', 'U25', 'O35', 'U35', 'GG', 'Missing XGS', 'Both Cards', 'Score',
              'Bet1', 'BetX', 'Bet2', 'BetO15', 'BetU15', 'BetO25', 'BetU25', 'BetO35', 'BetU35', 'BetGG', 'BetNG',
              'Edge1', 'EdgeX', 'Edge2', 'EdgeO15', 'EdgeU15', 'EdgeO25', 'EdgeU25', 'EdgeO35', 'EdgeU35', 'EdgeGG', 'EdgeNG',
              'Kelly1', 'KellyX', 'Kelly2', 'KellyO15', 'KellyU15', 'KellyO25', 'KellyU25', 'KellyO35', 'KellyU35', 'KellyGG', 'KellyNG']
-  CSV.open("bet_proposals.csv", "a", :write_headers=> (!File.exist?("bet_proposals.csv") || !CSV.read("bet_proposals.csv", headers: true).headers == headers),
-                                     :headers => headers, col_sep: ';') do |csv|
+  mode = append ? 'a' : 'w'
+  CSV.open(path, mode, write_headers: (!append || !File.exist?(path)), headers: headers, col_sep: ';') do |csv|
     proposals.each do |game|
       csv << [
         game[:home_team], game[:away_team],
@@ -429,7 +429,17 @@ def export_to_csv(proposals)
         game[:gg_kelly], game[:ng_kelly]
       ]
     end
-  end;0
+  end
+end
+
+def export_to_csv(proposals)
+  write_proposals_csv('bet_proposals.csv', proposals, append: true)
+
+  # Archive a dated copy for retrospective accuracy tracking
+  dated_path = File.join(__dir__, 'proposals', "#{Date.today.strftime('%Y-%m-%d')}.csv")
+  Dir.mkdir(File.join(__dir__, 'proposals')) unless Dir.exist?(File.join(__dir__, 'proposals'))
+  write_proposals_csv(dated_path, proposals, append: false)
+  0
 end
 
 def export_offsides_csv(results)
@@ -755,7 +765,166 @@ def market_edge_kelly(sim_pct, odds)
   [edge, kelly]
 end
 
+def evaluate_model
+  files = Dir.glob(File.join(__dir__, 'proposals', '*.csv')).sort.reject do |f|
+    File.basename(f, '.csv') == Date.today.strftime('%Y-%m-%d')
+  end
+
+  return "No archived proposals found. Run the predictor first to build history.\n" if files.empty?
+
+  api_key = ENV['FOOTBALL_DATA_API_KEY']
+  return "Set FOOTBALL_DATA_API_KEY env var (free key from football-data.org).\n" unless api_key
+
+  normalize = ->(name) {
+    ActiveSupport::Inflector.transliterate(name.to_s)
+      .downcase.gsub(/[^a-z0-9]/, ' ').gsub(/\s+/, ' ').strip
+  }
+  bigrams   = ->(s) { (0...s.length - 1).map { |i| s[i, 2] }.to_set }
+  sim       = ->(a, b) {
+    ba = bigrams.(a); bb = bigrams.(b)
+    return 0.0 if (ba | bb).empty?
+    (ba & bb).size.to_f / (ba | bb).size
+  }
+
+  stats = Hash.new { |h, k| h[k] = { correct: 0, total: 0 } }
+  threshold_bets = []
+  skipped = 0
+
+  files.each do |file|
+    date = File.basename(file, '.csv')
+    response = HTTParty.get(
+      'https://api.football-data.org/v4/matches',
+      headers: { 'X-Auth-Token' => api_key },
+      query:   { dateFrom: date, dateTo: date }
+    )
+    next unless response.success?
+
+    api_results = (response.parsed_response['matches'] || [])
+      .select { |m| m['status'] == 'FINISHED' }
+      .map do |m|
+        {
+          home:       m.dig('homeTeam', 'name').to_s,
+          home_short: m.dig('homeTeam', 'shortName').to_s,
+          away:       m.dig('awayTeam', 'name').to_s,
+          away_short: m.dig('awayTeam', 'shortName').to_s,
+          home_goals: m.dig('score', 'fullTime', 'home').to_i,
+          away_goals: m.dig('score', 'fullTime', 'away').to_i,
+        }
+      end
+
+    CSV.foreach(file, headers: true, col_sep: ';') do |row|
+      csv_home = row['Home'].to_s.strip
+      csv_away = row['Away'].to_s.strip
+
+      candidate = nil
+      api_results.each do |r|
+        sh = sim.(normalize.(csv_home), normalize.(r[:home])) +
+             sim.(normalize.(csv_home), normalize.(r[:home_short]))
+        sa = sim.(normalize.(csv_away), normalize.(r[:away])) +
+             sim.(normalize.(csv_away), normalize.(r[:away_short]))
+        combined = sh + sa
+        if candidate.nil? || combined > candidate[:score]
+          candidate = { result: r, score: combined }
+        end
+      end
+
+      if candidate.nil? || candidate[:score] < 0.8
+        skipped += 1
+        next
+      end
+
+      hg     = candidate[:result][:home_goals]
+      ag     = candidate[:result][:away_goals]
+      total  = hg + ag
+      result = hg > ag ? '1' : hg < ag ? '2' : 'X'
+
+      # Result prediction (highest probability among 1/X/2)
+      probs     = { '1' => row['1'].to_f, 'X' => row['X'].to_f, '2' => row['2'].to_f }
+      predicted = probs.max_by { |_, v| v }&.first
+      stats[:result][:correct] += 1 if predicted == result
+      stats[:result][:total]   += 1
+
+      # Confident win prediction (>60% for either team)
+      if row['1'].to_f > 60 || row['2'].to_f > 60
+        predicted_win = row['1'].to_f > row['2'].to_f ? '1' : '2'
+        stats[:result_confident][:correct] += 1 if predicted_win == result
+        stats[:result_confident][:total]   += 1
+      end
+
+      { o15: total > 1.5, u15: total <= 1.5,
+        o25: total > 2.5, u25: total <= 2.5,
+        o35: total > 3.5, u35: total <= 3.5 }.each do |key, actual|
+        stats[key][:correct] += 1 if actual
+        stats[key][:total]   += 1
+      end
+
+      stats[:gg][:correct] += 1 if hg > 0 && ag > 0
+      stats[:gg][:total]   += 1
+
+      # Threshold bets: any row where Bet* columns were stored
+      [
+        ['Bet1', :home_win], ['BetX', :draw], ['Bet2', :away_win],
+        ['BetO15', :o15], ['BetU15', :u15],
+        ['BetO25', :o25], ['BetU25', :u25],
+        ['BetO35', :o35], ['BetU35', :u35],
+        ['BetGG',  :gg],  ['BetNG',  :ng],
+      ].each do |col, key|
+        odds = row[col]&.to_f
+        next if odds.nil? || odds <= 1
+        actual_outcome = { home_win: result == '1', draw: result == 'X', away_win: result == '2',
+                           o15: total > 1.5, u15: total <= 1.5,
+                           o25: total > 2.5, u25: total <= 2.5,
+                           o35: total > 3.5, u35: total <= 3.5,
+                           gg: hg > 0 && ag > 0, ng: hg == 0 || ag == 0 }[key]
+        threshold_bets << { odds: odds, won: actual_outcome }
+      end
+    end
+  end
+
+  labels = {
+    result:           'Result (1/X/2)   ',
+    result_confident: 'Result (>60% win)',
+    o15:              'Over 1.5         ',
+    u15:              'Under 1.5        ',
+    o25:              'Over 2.5         ',
+    u25:              'Under 2.5        ',
+    o35:              'Over 3.5         ',
+    u35:              'Under 3.5        ',
+    gg:               'GG (both score)  ',
+  }
+
+  lines = []
+  lines << "#{'═' * 48}"
+  lines << '  MODEL ACCURACY REPORT'
+  lines << "  #{files.size} date(s) evaluated  |  #{skipped} unmatched"
+  lines << "#{'═' * 48}"
+  lines << ''
+  labels.each do |key, label|
+    s = stats[key]
+    if s[:total] > 0
+      pct = (s[:correct] / s[:total].to_f * 100).round(1)
+      lines << "#{label}  #{s[:correct]}/#{s[:total]}  (#{pct}%)"
+    else
+      lines << "#{label}  N/A"
+    end
+  end
+
+  if threshold_bets.any?
+    wins     = threshold_bets.count { |b| b[:won] }
+    total_b  = threshold_bets.size
+    roi      = threshold_bets.sum { |b| b[:won] ? b[:odds] - 1 : -1 }
+    avg_odds = threshold_bets.sum { |b| b[:odds] } / total_b.to_f
+    lines << ''
+    lines << "Threshold bets:  #{wins}/#{total_b}  (#{(wins.to_f / total_b * 100).round(1)}%)"
+    lines << "Avg odds: #{avg_odds.round(2)}  |  Flat-stake ROI: #{roi > 0 ? '+' : ''}#{roi.round(2)} units"
+  end
+
+  lines << ''
+  lines.join("\n")
+end
+
 GMAIL_ADDRESS = 'marky.rigas@gmail.com'.freeze
+EMAIL_RECIPIENTS = [GMAIL_ADDRESS, 'christos.deliyannis@gmail.com'].freeze
 
 def format_results_for_prompt(results)
   lines = []
@@ -945,7 +1114,7 @@ rescue => e
 end
 
 def ask_claude_for_tips(results)
-  return if results.empty?
+  return nil if results.empty?
 
   sim_data = format_results_for_prompt(results)
 
@@ -957,18 +1126,19 @@ def ask_claude_for_tips(results)
 
   if $?.success? && !output.strip.empty?
     sep = '═' * 56
-    puts "\n#{sep}"
-    puts "  AI TIPS"
-    puts sep
-    puts output.strip
-    puts sep
+    formatted = "\n#{sep}\n  AI TIPS\n#{sep}\n#{output.strip}\n#{sep}"
+    puts formatted
+    formatted
   else
     puts "Claude CLI returned no output. Is `claude` installed and logged in?"
+    nil
   end
 rescue Errno::ENOENT
   puts "`claude` CLI not found in PATH — skipping tips"
+  nil
 rescue => e
   puts "Tips failed: #{e.message}"
+  nil
 end
 
 def send_proposals_email(body)
@@ -981,7 +1151,7 @@ def send_proposals_email(body)
   date_str = Date.today.strftime('%Y-%m-%d')
   message = <<~MSG
     From: Soccer Predictor <#{GMAIL_ADDRESS}>
-    To: #{GMAIL_ADDRESS}
+    To: #{EMAIL_RECIPIENTS.join(', ')}
     Subject: Bet proposals #{date_str}
     Content-Type: text/plain; charset=UTF-8
 
@@ -991,9 +1161,9 @@ def send_proposals_email(body)
   smtp = Net::SMTP.new('smtp.gmail.com', 587)
   smtp.enable_starttls
   smtp.start('localhost', GMAIL_ADDRESS, password, :login) do |s|
-    s.send_message(message, GMAIL_ADDRESS, GMAIL_ADDRESS)
+    s.send_message(message, GMAIL_ADDRESS, EMAIL_RECIPIENTS)
   end
-  puts "Email sent to #{GMAIL_ADDRESS}"
+  puts "Email sent to #{EMAIL_RECIPIENTS.join(', ')}"
 rescue => e
   puts "Email failed: #{e.message}"
 end
@@ -1153,6 +1323,7 @@ begin
         --help          Show this help message and exit
         --reset-index      Clear index.txt and delete all proposal CSVs, then continue
         --all-leagues      Fetch all leagues from WhoScored, ignoring AVAILABLE_LEAGUES filter
+        --evaluate         Report accuracy across all archived proposals in proposals/
         --tips             After simulation, ask Claude for the best tips (requires `claude` CLI)
         --tips-only        Re-run Claude tips from existing CSVs without re-scraping
         --discover-fields       Print all WhoScored player summary JSON field names (use to audit available keys)
@@ -1163,6 +1334,11 @@ begin
         AWAY            Away team name
         LINEUP_URL      WhoScored lineups URL for the match
     HELP
+    exit!
+  end
+
+  if ARGV.include?('--evaluate')
+    puts evaluate_model
     exit!
   end
 
@@ -1267,11 +1443,13 @@ ensure
   end
   body = build_proposals(predicted_lineups)
   puts body unless body.empty?
-  if results.any?
-    send_proposals_email(body) unless body.empty?
-  end
 
   if ARGV.include?('--tips')
-    ask_claude_for_tips(results)
+    tips = ask_claude_for_tips(results)
+    body += tips if tips
+  end
+
+  if results.any?
+    send_proposals_email(body) unless body.empty?
   end
 end
