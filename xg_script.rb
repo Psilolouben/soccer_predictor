@@ -27,6 +27,8 @@ THRESHOLDS = {
   GG_THRESHOLD: { index: [14], value: 80 },
   CORNER_THRESHOLD: { index: [-1], value: 80 },
   CARDS_THRESHOLD: { index: [16], value: 80 },
+  TEAM_OVER05_THRESHOLD: { index: [18, 20], value: 70 },
+  TEAM_OVER15_THRESHOLD: { index: [19, 21], value: 55 },
   PENALTY_THRESHOLD: { index: [-1], value: 80 },
   RED_CARD_THRESHOLD: { index: [-1], value: 80 },
   SCORER_THRESHOLD: { index: [-1], value: 60 }
@@ -405,7 +407,7 @@ def write_to_index_file(res)
 end
 
 def write_proposals_csv(path, proposals, append: false)
-  headers = ['Home', 'Away', '1', 'X', '2', '1X', 'X2', '12', 'O15', 'U15', 'O25', 'U25', 'O35', 'U35', 'GG', 'Missing XGS', 'Both Cards', 'Score',
+  headers = ['Home', 'Away', '1', 'X', '2', '1X', 'X2', '12', 'O15', 'U15', 'O25', 'U25', 'O35', 'U35', 'GG', 'Missing XGS', 'Both Cards', 'Score', 'HO05', 'HO15', 'AO05', 'AO15',
              'Bet1', 'BetX', 'Bet2', 'BetO15', 'BetU15', 'BetO25', 'BetU25', 'BetO35', 'BetU35', 'BetGG', 'BetNG',
              'Edge1', 'EdgeX', 'Edge2', 'EdgeO15', 'EdgeU15', 'EdgeO25', 'EdgeU25', 'EdgeO35', 'EdgeU35', 'EdgeGG', 'EdgeNG',
              'Kelly1', 'KellyX', 'Kelly2', 'KellyO15', 'KellyU15', 'KellyO25', 'KellyU25', 'KellyO35', 'KellyU35', 'KellyGG', 'KellyNG']
@@ -418,6 +420,7 @@ def write_proposals_csv(path, proposals, append: false)
         game[:home].to_f + game[:draw].to_f, game[:draw].to_f + game[:away].to_f, game[:home].to_f + game[:away].to_f,
         game[:over15], game[:under15], game[:over25], game[:under25], game[:over35], game[:under35],
         game[:gg], game[:missing_xgs], game[:both_cards], game[:score],
+        game[:home_over05], game[:home_over15], game[:away_over05], game[:away_over15],
         game[:bet1], game[:betx], game[:bet2],
         game[:bet_o15], game[:bet_u15], game[:bet_o25], game[:bet_u25], game[:bet_o35], game[:bet_u35],
         game[:bet_gg], game[:bet_ng],
@@ -1189,6 +1192,8 @@ def simulate_match(home_team, away_team, stats)
     ht_home: 0, ht_draw: 0, ht_away: 0,
     ht_over05: 0, ht_over15: 0, ht_gg: 0,
     offsides_over35: 0, offsides_over45: 0,
+    home_over05: 0, home_over15: 0,
+    away_over05: 0, away_over15: 0,
     score: ''
   }
 
@@ -1254,6 +1259,11 @@ def simulate_match(home_team, away_team, stats)
     else
       res[:under35] += 1
     end
+
+    res[:home_over05] += 1 if home >= 1
+    res[:home_over15] += 1 if home >= 2
+    res[:away_over05] += 1 if away >= 1
+    res[:away_over15] += 1 if away >= 2
 
     if home.positive? && away.positive?
       res[:gg] += 1
