@@ -10,6 +10,7 @@ require 'active_support/time'
 require 'distribution'
 require 'mechanize'
 require 'net/http'
+require 'open3'
 require 'net/smtp'
 require 'uri'
 require 'json'
@@ -68,7 +69,8 @@ NAMES_MAP = {
   'Deportivo Alaves' => 'Alaves'
 }
 
-NUMBER_OF_SIMULATIONS = 100_00
+NUMBER_OF_SIMULATIONS = 100_000
+MAX_SCRAPE_RETRIES = 3
 
 def slugify(str)
   ActiveSupport::Inflector.transliterate(str.to_s).downcase.gsub(/[^a-z0-9]+/, '-').gsub(/^-+|-+$/, '')
@@ -101,6 +103,8 @@ AVAILABLE_LEAGUES = {
 }
 
 def games(url)
+  attempts ||= 0
+  attempts += 1
   @br = Watir::Browser.new :chrome, options: {
   args: [
     '--headless=new',
@@ -150,13 +154,21 @@ def games(url)
   }.flatten.compact
   a
 rescue Watir::Wait::TimeoutError => e
-  puts "Encountered a timeout, retrying..."
-  retry
+  @br.quit rescue nil
+  if attempts < MAX_SCRAPE_RETRIES
+    puts "Encountered a timeout (attempt #{attempts}/#{MAX_SCRAPE_RETRIES}), retrying..."
+    retry
+  else
+    puts "Giving up on fetching fixtures after #{MAX_SCRAPE_RETRIES} attempts — skipping this run"
+    []
+  end
 ensure
   @br.quit
 end
 
 def starting_eleven(url)
+  attempts ||= 0
+  attempts += 1
   @br = Watir::Browser.new :chrome, options: {
     args: [
       '--headless=new',
@@ -180,18 +192,15 @@ def starting_eleven(url)
   a
 rescue JSON::ParserError
   return nil
-rescue Selenium::WebDriver::Error::StaleElementReferenceError
-  @br.quit
-  puts "Encountered a stale element reference, retrying..."
-  retry
-rescue Net::ReadTimeout => e
-  @br.quit
-  puts "Encountered a timeout, retrying..."
-  retry
-rescue Watir::Wait::TimeoutError => e
-  @br.quit
-  puts "Encountered a timeout, retrying..."
-  retry
+rescue Selenium::WebDriver::Error::StaleElementReferenceError, Net::ReadTimeout, Watir::Wait::TimeoutError => e
+  @br.quit rescue nil
+  if attempts < MAX_SCRAPE_RETRIES
+    puts "Encountered #{e.class} (attempt #{attempts}/#{MAX_SCRAPE_RETRIES}), retrying..."
+    retry
+  else
+    puts "Giving up on lineup for #{url} after #{MAX_SCRAPE_RETRIES} attempts (#{e.class})"
+    return nil
+  end
 rescue => e
   return nil
 ensure
@@ -314,16 +323,55 @@ def xgs_new(home_team, away_team, home_id, away_id, starting_eleven, competition
   puts 'Fetching home xGs...'
 
   @br.goto(home_url)
+  home_rows = JSON.parse(@br.elements.first.text)['playerTableStats']
+
+  # Early-season safety net: field=Home/Away splits shots by venue, but when a team has
+  # played only 1-2 games at that venue this season, most of the predicted XI has no
+  # matched row at all (not just a low value) and the sim ends up simulating a team
+  # that effectively never shoots. Fall back to the venue-agnostic "Overall" row (both
+  # home and away matches so far) for any player missing a venue-specific one.
+  home_overall_url = home_url.sub('field=Home', 'field=Overall')
+  @br.goto(home_overall_url)
+  home_overall_rows = JSON.parse(@br.elements.first.text)['playerTableStats']
+
+  # Tournament-debut safety net (e.g. a team's first Champions League match of the
+  # season): the competition itself can have zero rows for EVERY player, home or away,
+  # because nobody has a shot recorded in it yet. Dropping tournamentOptions entirely
+  # returns the player's stats from whatever competition(s) they HAVE played this
+  # season (almost always their domestic league) as a rough stand-in. This is a known
+  # imprecise substitute (different level of opposition) so any match that needs it
+  # gets tagged via league_xgs_fallback rather than silently blended in.
+  home_all_comps_url = home_overall_url.sub("&tournamentOptions=#{competition_id}", '')
+  @br.goto(home_all_comps_url)
+  home_all_comps_rows = JSON.parse(@br.elements.first.text)['playerTableStats']
+
   xgs_warning = false
+  home_league_fallback = false
   home_xgs = starting_eleven[:home].each_with_object({}) do |p, hsh|
-    shots = (JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['name'].include?(p) && x['tournamentId'].to_i == competition_id.to_i}&.first.try(:[], 'totalShots') || 0)
-    apps = (JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['name'].include?(p) && x['tournamentId'].to_i == competition_id.to_i}&.first.try(:[], 'apps')  || 0)
-    hsh[p] = []
-    hsh[p][0] = JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['name'].include?(p) && x['tournamentId'].to_i == competition_id.to_i}&.first.try(:[], 'xGPerShot') || 0
-    hsh[p][1] = apps == 0 ? 0 : shots / apps.to_f
+    row = home_rows.select{|x| x['name'].include?(p) && x['tournamentId'].to_i == competition_id.to_i}.first
+    shots       = row.try(:[], 'totalShots') || 0
+    apps        = row.try(:[], 'apps') || 0
+    xg_per_shot = row.try(:[], 'xGPerShot') || 0
+
+    if apps.zero?
+      fallback = home_overall_rows.select{|x| x['name'].include?(p) && x['tournamentId'].to_i == competition_id.to_i}.first
+      shots       = fallback.try(:[], 'totalShots') || 0
+      apps        = fallback.try(:[], 'apps') || 0
+      xg_per_shot = fallback.try(:[], 'xGPerShot') || 0
+    end
+
+    if apps.zero?
+      cross = home_all_comps_rows.select{|x| x['name'].include?(p)}.sort_by{|x| -(x['apps'].to_i)}.first
+      if cross && cross['apps'].to_i > 0
+        shots       = cross.try(:[], 'totalShots') || 0
+        apps        = cross.try(:[], 'apps') || 0
+        xg_per_shot = cross.try(:[], 'xGPerShot') || 0
+        home_league_fallback = true
+      end
+    end
+
+    hsh[p] = [xg_per_shot, apps.zero? ? 0 : shots / apps.to_f]
   end
-  xgs_warning = true if home_xgs.count{ |_,v| v == 0} > 2
-  return if home_xgs.values.all?{|x| x == [0,0]}
 
   home_cards_url = "https://www.whoscored.com/StatisticsFeed/1/GetPlayerStatistics?category=summary&subcategory=all&statsAccumulationType=0&isCurrent=true&playerId=&teamIds=#{home_id}&matchId=&stageId=&tournamentOptions=#{competition_id}&sortBy=Rating&sortAscending=&age=&ageComparisonType=&appearances=&appearancesComparisonType=&field=Home&nationality=&positionOptions=&timeOfTheGameEnd=&timeOfTheGameStart=&isMinApp=false&page=&includeZeroValues=true&numberOfPlayersToPick=&incPens="
   @br.goto(home_cards_url)
@@ -342,6 +390,20 @@ def xgs_new(home_team, away_team, home_id, away_id, starting_eleven, competition
     end
   end
 
+  # A [0,0] xG value only signals a real data-quality problem if we ALSO have no
+  # evidence the player has actual minutes this season. The summary/cards feed lists
+  # every rostered player regardless of shot volume, so a player who shows up there
+  # with real apps but nowhere in the xg-stats feeds is a CONFIRMED legitimate zero
+  # (an ever-present centre-back, or any goalkeeper) — not missing data — and
+  # shouldn't count toward the warning the way a genuinely unmatched player should.
+  home_unexplained_zeros = home_xgs.count do |p, v|
+    next false unless v == [0, 0]
+    confirmed = home_summary_raw.select{|x| x['name'].include?(p) && x['tournamentId'].to_i == competition_id.to_i}.first
+    (confirmed.try(:[], 'apps') || 0).to_i.zero?
+  end
+  xgs_warning = true if home_unexplained_zeros > 2
+  return if home_xgs.values.all?{|x| x == [0,0]}
+
   home_cards = starting_eleven[:home].each_with_object({}) do |p, hsh|
     player = home_summary_raw.select{|x| x['name'].include?(p) && x['tournamentId'].to_i == competition_id.to_i}.first
     yellow = player.try(:[], 'yellowCard') || 0
@@ -352,16 +414,42 @@ def xgs_new(home_team, away_team, home_id, away_id, starting_eleven, competition
 
   @br.goto(away_url)
   puts 'Fetching away xGs...'
+  away_rows = JSON.parse(@br.elements.first.text)['playerTableStats']
 
+  away_overall_url = away_url.sub('field=Away', 'field=Overall')
+  @br.goto(away_overall_url)
+  away_overall_rows = JSON.parse(@br.elements.first.text)['playerTableStats']
+
+  away_all_comps_url = away_overall_url.sub("&tournamentOptions=#{competition_id}", '')
+  @br.goto(away_all_comps_url)
+  away_all_comps_rows = JSON.parse(@br.elements.first.text)['playerTableStats']
+
+  away_league_fallback = false
   away_xgs = starting_eleven[:away].each_with_object({}) do |p, hsh|
-    shots = (JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['name'].include?(p) && x['tournamentId'].to_i == competition_id.to_i}&.first.try(:[], 'totalShots') || 0)
-    apps = (JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['name'].include?(p) && x['tournamentId'].to_i == competition_id.to_i}&.first.try(:[], 'apps')  || 0)
-    hsh[p] = []
-    hsh[p][0] = JSON.parse(@br.elements.first.text)['playerTableStats'].select{|x| x['name'].include?(p) && x['tournamentId'].to_i == competition_id.to_i}&.first.try(:[], 'xGPerShot') || 0
-    hsh[p][1] = apps == 0 ? 0 : shots / apps.to_f
+    row = away_rows.select{|x| x['name'].include?(p) && x['tournamentId'].to_i == competition_id.to_i}.first
+    shots       = row.try(:[], 'totalShots') || 0
+    apps        = row.try(:[], 'apps') || 0
+    xg_per_shot = row.try(:[], 'xGPerShot') || 0
+
+    if apps.zero?
+      fallback = away_overall_rows.select{|x| x['name'].include?(p) && x['tournamentId'].to_i == competition_id.to_i}.first
+      shots       = fallback.try(:[], 'totalShots') || 0
+      apps        = fallback.try(:[], 'apps') || 0
+      xg_per_shot = fallback.try(:[], 'xGPerShot') || 0
+    end
+
+    if apps.zero?
+      cross = away_all_comps_rows.select{|x| x['name'].include?(p)}.sort_by{|x| -(x['apps'].to_i)}.first
+      if cross && cross['apps'].to_i > 0
+        shots       = cross.try(:[], 'totalShots') || 0
+        apps        = cross.try(:[], 'apps') || 0
+        xg_per_shot = cross.try(:[], 'xGPerShot') || 0
+        away_league_fallback = true
+      end
+    end
+
+    hsh[p] = [xg_per_shot, apps.zero? ? 0 : shots / apps.to_f]
   end
-  xgs_warning = true if away_xgs.count{ |_,v| v == 0} > 2
-  return if away_xgs.values.all?{|x| x == [0,0]}
 
   away_cards_url = "https://www.whoscored.com/StatisticsFeed/1/GetPlayerStatistics?category=summary&subcategory=all&statsAccumulationType=0&isCurrent=true&playerId=&teamIds=#{away_id}&matchId=&stageId=&tournamentOptions=#{competition_id}&sortBy=Rating&sortAscending=&age=&ageComparisonType=&appearances=&appearancesComparisonType=&field=Away&nationality=&positionOptions=&timeOfTheGameEnd=&timeOfTheGameStart=&isMinApp=false&page=&includeZeroValues=true&numberOfPlayersToPick=&incPens="
   puts 'Fetching away cards...'
@@ -369,6 +457,16 @@ def xgs_new(home_team, away_team, home_id, away_id, starting_eleven, competition
   @br.goto(away_cards_url)
 
   away_summary_raw = JSON.parse(@br.elements.first.text)['playerTableStats']
+
+  # Same "confirmed zero vs missing data" distinction as the home side above.
+  away_unexplained_zeros = away_xgs.count do |p, v|
+    next false unless v == [0, 0]
+    confirmed = away_summary_raw.select{|x| x['name'].include?(p) && x['tournamentId'].to_i == competition_id.to_i}.first
+    (confirmed.try(:[], 'apps') || 0).to_i.zero?
+  end
+  xgs_warning = true if away_unexplained_zeros > 2
+  return if away_xgs.values.all?{|x| x == [0,0]}
+
   away_cards = starting_eleven[:away].each_with_object({}) do |p, hsh|
     player = away_summary_raw.select{|x| x['name'].include?(p) && x['tournamentId'].to_i == competition_id.to_i}.first
     yellow = player.try(:[], 'yellowCard') || 0
@@ -388,6 +486,7 @@ def xgs_new(home_team, away_team, home_id, away_id, starting_eleven, competition
     home_xgs: home_xgs,
     away_xgs: away_xgs,
     xgs_warning: xgs_warning,
+    league_xgs_fallback: home_league_fallback || away_league_fallback,
     home_cards: home_cards,
     away_cards: away_cards,
     predicted_lineup: predicted_lineup,
@@ -412,7 +511,8 @@ def write_proposals_csv(path, proposals, append: false)
   headers = ['Home', 'Away', '1', 'X', '2', '1X', 'X2', '12', 'O15', 'U15', 'O25', 'U25', 'O35', 'U35', 'GG', 'Missing XGS', 'Both Cards', 'Score', 'HO05', 'HO15', 'AO05', 'AO15', 'OffsO35', 'OffsO45',
              'Bet1', 'BetX', 'Bet2', 'BetO15', 'BetU15', 'BetO25', 'BetU25', 'BetO35', 'BetU35', 'BetGG', 'BetNG',
              'Edge1', 'EdgeX', 'Edge2', 'EdgeO15', 'EdgeU15', 'EdgeO25', 'EdgeU25', 'EdgeO35', 'EdgeU35', 'EdgeGG', 'EdgeNG',
-             'Kelly1', 'KellyX', 'Kelly2', 'KellyO15', 'KellyU15', 'KellyO25', 'KellyU25', 'KellyO35', 'KellyU35', 'KellyGG', 'KellyNG']
+             'Kelly1', 'KellyX', 'Kelly2', 'KellyO15', 'KellyU15', 'KellyO25', 'KellyU25', 'KellyO35', 'KellyU35', 'KellyGG', 'KellyNG',
+             'League XGs']
   mode = append ? 'a' : 'w'
   CSV.open(path, mode, write_headers: (!append || !File.exist?(path)), headers: headers, col_sep: ';') do |csv|
     proposals.each do |game|
@@ -432,7 +532,8 @@ def write_proposals_csv(path, proposals, append: false)
         game[:gg_edge], game[:ng_edge],
         game[:home_kelly], game[:draw_kelly], game[:away_kelly],
         game[:o15_kelly], game[:u15_kelly], game[:o25_kelly], game[:u25_kelly], game[:o35_kelly], game[:u35_kelly],
-        game[:gg_kelly], game[:ng_kelly]
+        game[:gg_kelly], game[:ng_kelly],
+        game[:league_xgs_fallback]
       ]
     end
   end
@@ -488,7 +589,7 @@ def build_proposals(predicted_lineups = {})
   return '' unless File.exist?('bet_proposals.csv')
 
   games = import_from_csv
-  skip_cols = ['Missing XGS', 'Home', 'Away', 'Score',
+  skip_cols = ['Missing XGS', 'Home', 'Away', 'Score', 'League XGs',
                'Bet1', 'BetX', 'Bet2', 'BetO15', 'BetU15', 'BetO25', 'BetU25', 'BetO35', 'BetU35', 'BetGG', 'BetNG',
                'Edge1', 'EdgeX', 'Edge2', 'EdgeO15', 'EdgeU15', 'EdgeO25', 'EdgeU25', 'EdgeO35', 'EdgeU35', 'EdgeGG', 'EdgeNG',
                'Kelly1', 'KellyX', 'Kelly2', 'KellyO15', 'KellyU15', 'KellyO25', 'KellyU25', 'KellyO35', 'KellyU35', 'KellyGG', 'KellyNG']
@@ -565,6 +666,7 @@ def build_proposals(predicted_lineups = {})
     lines << sep
     header = "#{g['Home']} vs #{g['Away']}"
     header += '  [PREDICTED XI]' if predicted_lineups[match_key]
+    header += '  [LEAGUE XG]' if g['League XGs'] == 'true'
     lines << "#{header.ljust(38)}  #{score_str}"
     lines << "  Odds: #{odds_str}"
 
@@ -930,16 +1032,21 @@ def evaluate_model
 end
 
 GMAIL_ADDRESS = 'marky.rigas@gmail.com'.freeze
-EMAIL_RECIPIENTS = [GMAIL_ADDRESS, 'christos.deliyannis@gmail.com'].freeze
+#EMAIL_RECIPIENTS = [GMAIL_ADDRESS, 'christos.deliyannis@gmail.com'].freeze
+EMAIL_RECIPIENTS = [GMAIL_ADDRESS]
 
 def format_results_for_prompt(results)
   lines = []
   results.each do |r|
-    lines << "#{r[:home_team]} vs #{r[:away_team]}#{r[:predicted_lineup] ? ' [PREDICTED XI]' : ''}"
+    next if r[:missing_xgs]
+    lines << "#{r[:home_team]} vs #{r[:away_team]}#{r[:predicted_lineup] ? ' [PREDICTED XI]' : ''}#{r[:league_xgs_fallback] ? ' [LEAGUE XG]' : ''}"
     lines << "  1/X/2: #{r[:home].round(1)}% / #{r[:draw].round(1)}% / #{r[:away].round(1)}%"
     lines << "  O1.5: #{r[:over15].round(1)}%  U1.5: #{r[:under15].round(1)}%  O2.5: #{r[:over25].round(1)}%  U2.5: #{r[:under25].round(1)}%  O3.5: #{r[:over35].round(1)}%  U3.5: #{r[:under35].round(1)}%"
     lines << "  GG: #{r[:gg].round(1)}%  NG: #{(100.0 - r[:gg]).round(1)}%  Both Cards: #{r[:both_cards].round(1)}%  2or3 Goals: #{r[:two_three].round(1)}%  Most likely score: #{r[:score]}"
     lines << "  Missing XGS: #{r[:missing_xgs]}"
+    if r[:league_xgs_fallback]
+      lines << "  NOTE: this competition has no shot data yet for one or both teams this season (e.g. a Champions League/Europa opener) — probabilities use their DOMESTIC LEAGUE form as a substitute, which is not a like-for-like estimate (different level of opposition). Treat with extra caution."
+    end
 
     all_scorers = ((r[:home_scorers] || {}).merge(r[:away_scorers] || {}))
                     .select { |_, v| v >= PLAYER_SCORER_THRESHOLD }
@@ -1032,11 +1139,14 @@ def format_csvs_for_prompt
   lines = []
   by_match.each do |match_key, r|
     next if r['Missing XGS'] == 'true'
-    lines << "#{r['Home']} vs #{r['Away']}"
+    lines << "#{r['Home']} vs #{r['Away']}#{r['League XGs'] == 'true' ? ' [LEAGUE XG]' : ''}"
     lines << "  1/X/2: #{r['1'].to_f.round(1)}% / #{r['X'].to_f.round(1)}% / #{r['2'].to_f.round(1)}%"
     lines << "  O1.5/O2.5/O3.5: #{r['O15'].to_f.round(1)}% / #{r['O25'].to_f.round(1)}% / #{r['O35'].to_f.round(1)}%"
     lines << "  GG: #{r['GG'].to_f.round(1)}%   Both Cards: #{r['Both Cards'].to_f.round(1)}%   Most likely score: #{r['Score']}"
     lines << "  Missing XGS: #{r['Missing XGS']}"
+    if r['League XGs'] == 'true'
+      lines << "  NOTE: this competition has no shot data yet for one or both teams this season (e.g. a Champions League/Europa opener) — probabilities use their DOMESTIC LEAGUE form as a substitute, which is not a like-for-like estimate (different level of opposition). Treat with extra caution."
+    end
 
     odds_parts = []
     [['Bet1','1'], ['BetX','X'], ['Bet2','2'], ['BetO15','O1.5'], ['BetU15','U1.5'],
@@ -1101,9 +1211,9 @@ def ask_claude_for_tips_from_csvs
   prompt   = template.gsub('{{SIM_DATA}}', sim_data)
 
   puts "\nAsking Claude for tips (from existing CSVs)..."
-  output = IO.popen(['claude', '-p', prompt], err: :close, &:read)
+  output, err_output, status = Open3.capture3('claude', '-p', prompt)
 
-  if $?.success? && !output.strip.empty?
+  if status.success? && !output.strip.empty?
     sep = '═' * 56
     puts "\n#{sep}"
     puts "  AI TIPS"
@@ -1112,6 +1222,7 @@ def ask_claude_for_tips_from_csvs
     puts sep
   else
     puts "Claude CLI returned no output. Is `claude` installed and logged in?"
+    puts "  claude said: #{err_output.strip}" unless err_output.strip.empty?
   end
 rescue Errno::ENOENT
   puts "`claude` CLI not found in PATH — skipping tips"
@@ -1128,15 +1239,16 @@ def ask_claude_for_tips(results)
   prompt = template.gsub('{{SIM_DATA}}', sim_data)
 
   puts "\nAsking Claude for tips..."
-  output = IO.popen(['claude', '-p', prompt], err: :close, &:read)
+  output, err_output, status = Open3.capture3('claude', '-p', prompt)
 
-  if $?.success? && !output.strip.empty?
+  if status.success? && !output.strip.empty?
     sep = '═' * 56
     formatted = "\n#{sep}\n  AI TIPS\n#{sep}\n#{output.strip}\n#{sep}"
     puts formatted
     formatted
   else
     puts "Claude CLI returned no output. Is `claude` installed and logged in?"
+    puts "  claude said: #{err_output.strip}" unless err_output.strip.empty?
     nil
   end
 rescue Errno::ENOENT
@@ -1179,6 +1291,7 @@ def simulate_match(home_team, away_team, stats)
     home_team: home_team,
     away_team: away_team,
     missing_xgs: stats[:xgs_warning],
+    league_xgs_fallback: stats[:league_xgs_fallback],
     predicted_lineup: stats[:predicted_lineup],
     home: 0,
     draw: 0,
@@ -1319,7 +1432,7 @@ def simulate_match(home_team, away_team, stats)
   res[:away_player_cards] = away_card_count.transform_values   { |v| v / pct }
   res[:score] = scores.tally.transform_values{|v| v/(NUMBER_OF_SIMULATIONS.to_f / 100)}.sort_by{|_, v| v}.reverse.first.join(':')
 
-  return res.merge(res.except(:home_team, :away_team, :missing_xgs, :predicted_lineup,
+  return res.merge(res.except(:home_team, :away_team, :missing_xgs, :league_xgs_fallback, :predicted_lineup,
                                :home_scorers, :away_scorers, :home_player_cards, :away_player_cards,
                                :score).transform_values{ |v| v / (NUMBER_OF_SIMULATIONS / 100.0) })
 rescue => e
