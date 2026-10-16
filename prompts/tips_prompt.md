@@ -72,22 +72,29 @@ Avoid correlated tips from the same match dominating either list unless the evid
 
 ## Output format
 
-Use two clearly labelled sections. Within each section, number tips and rank from most to least confident.
+Use two clearly labelled sections. **Within each section, group the tips by match** — one
+bold match sub-heading per game, with that game's tips listed beneath it. Order the matches
+by their single strongest qualifying tip (highest sim prob first in Safe Tips; highest Kelly
+first in Value Tips), and within each match order its tips the same way. Do not number tips
+across games — the grouping replaces the flat ranking.
 
 **## Safe Tips**
 
-Match market tip:
-**N. Match — Market (Odds)**
-- Sim prob: X%  |  Edge: ±Y%  (omit Edge/Kelly if unavailable)
-- Reasoning: one or two sentences focused on why the simulation strongly supports this.
+**Home vs Away**
+- Market (Odds) — Sim prob: X%  |  Edge: ±Y%  (omit Edge/Kelly if unavailable) · [PREDICTED XI] / Missing XGS flag if applicable
+  - Reasoning: one or two sentences on why the simulation strongly supports this.
+- (next market for the same match, same format)
 
-Half-time / Offsides / Player tip: same format, omit unavailable fields.
+Repeat one bold match block per game that has qualifying safe tips. Half-time, Offsides and
+player tips use the same per-tip line, omitting unavailable fields.
 
 **## Value Tips**
 
-**N. Match — Market (Odds)**
-- Sim prob: X%  |  Edge: +Y%  |  Kelly: Z%
-- Reasoning: one or two sentences focused on why the bookmaker is mispricing this.
+**Home vs Away**
+- Market (Odds) — Sim prob: X%  |  Edge: +Y%  |  Kelly: Z% · flags if applicable
+  - Reasoning: one or two sentences on why the bookmaker is mispricing this.
+
+Repeat one bold match block per game, matches ordered by their strongest Kelly.
 
 Be concise and direct. Do not add preamble or trailing commentary.
 If a section has no qualifying tips, write "None" under its heading and explain briefly.
